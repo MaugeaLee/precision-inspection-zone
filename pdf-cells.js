@@ -1,3 +1,4 @@
+import {panelGeometry} from './render-quality.js';
 import * as T from 'three';
 import {CSS2DObject} from 'three/addons/renderers/CSS2DRenderer.js';
 import {replaceProduct} from './shapes.js';
@@ -11,8 +12,8 @@ export const PDF_CELLS=[
 ];
 const material=c=>new T.MeshStandardMaterial({color:c,roughness:.5,metalness:.25});
 const gray=material(0x39444e),white=material(0xd7e2e7),blue=material(0x147cb9),black=material(0x14242d),gold=material(0xf4b546);
-function box(g,w,h,d,x,y,z,m=white){const o=new T.Mesh(new T.BoxGeometry(w,h,d),m);o.position.set(x,y,z);g.add(o);return o;}
-function text(g,s,x,y,z){const e=document.createElement('div');e.className='equipment-label';e.textContent=s;const o=new CSS2DObject(e);o.position.set(x,y,z);g.add(o);return o;}
+function box(g,w,h,d,x,y,z,m=white){const o=new T.Mesh(panelGeometry(w,h,d),m);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;g.add(o);return o;}
+function text(g,s,x,y,z){const e=document.createElement('div');e.className='equipment-label';e.textContent=s;const o=new CSS2DObject(e);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;g.add(o);return o;}
 function group(root,x,z){const g=new T.Group();g.position.set(x,0,z);root.add(g);return g;}
 function rack(g,x,z){box(g,.65,1.8,.65,x,.9,z,black);for(let y=.25;y<1.7;y+=.23){box(g,.55,.13,.04,x,y,z+.34,gray);box(g,.06,.04,.02,x+.2,y,z+.37,blue);}}
 function scanner(root,x,z,w,name){const g=group(root,x,z);g.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(g,w,.15,3.6,0,.075,0,gray);box(g,w,3.5,.18,0,1.75,-1.7,gray);for(const side of [-1,1])box(g,.2,3.5,3.6,side*w/2,1.75,0,gray);box(g,w,.3,3.6,0,3.5,0,gray);box(g,w-.8,.7,2,0,.5,0,black);const sample=new T.Group();sample.position.y=.9;g.add(sample);const sensor=box(g,.45,.25,.3,-w*.27,2,-.9,blue);box(g,.18,.12,.04,-w*.27,2,-.72,black);const lamp=box(g,.15,.2,.15,w/2-.2,3.85,1.5,gold);text(g,name,0,4.2,0);text(g,'형상 · CAD 편차',0,.25,1.9);return {g,sample,sensor,lamp};}

@@ -13,3 +13,7 @@
 .pdf-cell{padding:16px 0;border-bottom:1px solid #35545e}.pdf-cell table{width:100%;font-size:12px}.pdf-cell th,.pdf-cell td{padding:8px;text-align:left;vertical-align:top}.pdf-cell th{color:#80dfca}.pdf-cell small{color:#a5bec6}#focus-card{max-height:55%;overflow:auto}
 
 .ocs-flow{padding:16px;background:#183b40;border:1px solid #4e8d87;border-radius:7px;color:#a9eddb}.view-tools{flex-wrap:wrap;max-width:350px;justify-content:flex-end}.stage-heading{max-width:230px}
+
+.view-tools{top:16px;max-width:410px;gap:5px}.view-tools select{background:#17323e;color:#bfe8e1;border:1px solid #446776;border-radius:6px;font-size:10px;padding:6px}.equipment-label{background:#102735ed;border:1px solid #60899788;border-radius:5px;padding:5px 8px;box-shadow:0 3px 10px #0003;font-size:10px;letter-spacing:.1px}.plan-label{background:#123b43ee;color:#99f0d9;border-color:#4f9f9088;font-weight:700}.stage-heading{top:54px;pointer-events:none}.focus-card{top:102px}.stage{background:radial-gradient(ellipse at 50% 40%,#344a57,#172932)}
+
+.source-label{display:none!important}
