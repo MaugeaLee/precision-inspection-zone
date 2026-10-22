@@ -9,3 +9,7 @@
 .label-layer{z-index:1}.focus-card,.view-tools,.playback,.stage-heading,.scene-caption{z-index:3}.plan-label{pointer-events:auto}.equipment-options select{background:#19333e;color:#d9eeef;border:1px solid #42606b;border-radius:5px;padding:6px}
 
 .equipment-options a{color:#70dfc8}.focus-card{width:205px}.equipment-label{font-size:10px}
+
+.pdf-cell{padding:16px 0;border-bottom:1px solid #35545e}.pdf-cell table{width:100%;font-size:12px}.pdf-cell th,.pdf-cell td{padding:8px;text-align:left;vertical-align:top}.pdf-cell th{color:#80dfca}.pdf-cell small{color:#a5bec6}#focus-card{max-height:55%;overflow:auto}
+
+.ocs-flow{padding:16px;background:#183b40;border:1px solid #4e8d87;border-radius:7px;color:#a9eddb}.view-tools{flex-wrap:wrap;max-width:350px;justify-content:flex-end}.stage-heading{max-width:230px}
