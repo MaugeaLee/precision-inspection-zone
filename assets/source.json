@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/theuniversepark/meta-factory",
+  "commit": "8e703832d445e5751baa747ce51983bb620d89e0",
+  "zone_module": "js/inspzone.js",
+  "license": "ISC (package.json)",
+  "adaptation": "Standalone inspection host and compact pickup paths"
+}
