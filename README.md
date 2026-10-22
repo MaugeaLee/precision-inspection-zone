@@ -8,16 +8,25 @@ Node.js가 있는 환경에서 이 폴더의 터미널을 열고 `node server.mj
 
 ## 포함 기능
 
-- 접수·도킹, 비전검사, 3D 스캔·UT, O-INSPECT, ATOS, AI 판정의 6개 공정 노드
-- 원본의 검사장비 모델·관절 로봇·AMR 3대·검사 상태머신
-- 제품별 경로: 후드·도어·도어트림은 VIS→SCAN, e-axle은 VIS→OINS, 유압블록·리어커버는 ATOS→OINS
+- 사업계획서의 A-4-1~A-4-5 5개 셀, 접수·도킹은 공용 반입 구역
+- A-4-1: 초고성능 로봇형 검사 비전 시스템 Cell
+- A-4-2: 3D 스캔과 초음파 용접 검사 로봇 Cell
+- A-4-3: 4족 보행 검사 및 안전 모니터링 로봇 Cell
+- A-4-4: 원키트 (One-Kit) 비전 센서 기술 드론 Cell
+- A-4-5: AI정밀검사(QMS) 통합 OCS 시뮬레이션 Cell
+- 피지컬AI 전용. 자동화 모드 선택 삭제
+- ZEISS ABIS III, AIMAX, O-INSPECT 8/6/3, MMZ M 개념 모델
+- 두산 H2017/H2515 검사 협동로봇, 현대 HDR50-22/HDR80-22 이적재 로봇 선택
+- 제조사 CAD가 아닌 코드 기반 개념 형상·동작. 실제 치수·관절 한계·가반하중 검증 모델이 아님
+- AMR 3대·검사 상태머신은 원본을 기반으로 함
+- 제품별 경로: 후드·도어·도어트림은 VIS→SCAN, e-axle은 VIS→OINS, 유압블록·리어커버는 MMZ→OINS
 - 정상 OK, 불확실→O-INSPECT 재측정→OK, NG→보류·선행공정 환류 요청
 - 제품·판정 시나리오별 수동 투입, 자동 시연, 재생·일시정지·1/3/10/30배속, 보호정지·해제
 - 셀 클릭 확대, 전체 보기, 라벨·데이터 패킷 표시, 셀 이상·복구 시연
 - 제품 ID·샘플별 검사 이력과 수행 경로의 CSV/JSON 저장
 - 1920×1080 WebM 영상 녹화: 3D 장면·공정 라벨·시각·실적을 포함
 
-Space는 재생/일시정지, Esc는 전체 보기입니다. 초기 시연에는 후드 OK, 유압블록 불확실 후 재측정, e-axle NG가 각각 1개씩 들어 있습니다. 모드 전환·초기화는 현재 이력을 초기화하므로 필요한 이력은 먼저 저장합니다.
+Space는 재생/일시정지, Esc는 전체 보기입니다. 초기 시연에는 후드 OK, 유압블록 불확실 후 재측정, e-axle NG가 각각 1개씩 들어 있습니다. 초기화는 현재 이력을 초기화하므로 필요한 이력은 먼저 저장합니다.
 
 ## 표현 범위
 
@@ -37,4 +46,11 @@ Space는 재생/일시정지, Esc는 전체 보기입니다. 초기 시연에는
 - 원본의 `package.json`은 ISC 라이선스로 표기합니다. 원본 오픈소스 고지는 `dist/assets/ORIGINAL_OPEN_SOURCE.md`, 소스 버전은 `dist/assets/source.json`에 있습니다.
 - three.js의 MIT 라이선스와 ABB 모델의 Apache-2.0 라이선스를 각각 `dist/vendor/three/LICENSE`, `dist/assets/models/ABB_APACHE-2.0.txt`에 포함합니다.
 
-브라우저 검증: 초기 후드의 DOCK→VIS→SCAN→JUDGE 후 OK, e-axle의 DOCK→VIS→OINS→JUDGE 후 NG, 유압블록의 DOCK→ATOS→OINS→JUDGE→OINS→JUDGE 후 OK를 품질 이력 화면에서 확인했습니다.
+브라우저 검증: 초기 후드의 DOCK→VIS→SCAN→JUDGE 후 OK, e-axle의 DOCK→VIS→OINS→JUDGE 후 NG, 유압블록의 DOCK→MMZ→OINS→JUDGE→OINS→JUDGE 후 OK를 품질 이력 화면에서 확인했습니다.
+
+
+## 구성 근거 (2026-10-22 수정)
+
+셀 명칭: 연구개발계획서 부록 최종제출본 PDF 55~56쪽 및 78쪽. 장비 모델: 사용자 지정. O-INSPECT는 A-4-1, MMZ M은 A-4-2 하위 장비로 배치한 시연 구성안이며 사업계획서의 확정 배치를 뜻하지 않습니다. MMZ M은 문형 CMM으로 초음파 센서를 대체하지 않습니다. 4족·드론은 제조사 미지정 개념 모델입니다.
+
+모델 참고: https://www.zeiss.com/metrology/en/systems/optical-3d/automated-solutions/zeiss-abis-iii.html , https://www.zeiss.com/metrology/en/systems/cmms/large-cmms/mmz-m.html , https://www.doosanrobotics.com/en/product-solutions/product/h-series/h2515/ , https://hd-hyundairobotics.com/biz/product/detail/14

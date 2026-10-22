@@ -2,7 +2,7 @@ import {InspZone,INSP} from './original/inspzone.js';
 
 export const PRODUCTS=INSP.products;
 export const ROUTES=INSP.routes;
-export const CELL_SHORT={DOCK:'접수·도킹',VIS:'비전검사',SCAN:'3D 스캔·UT',OINS:'O-INSPECT',ATOS:'ATOS',JUDGE:'AI 판정'};
+export const CELL_SHORT={DOCK:'접수·도킹',VIS:'ABIS III · AIMAX',SCAN:'3D 스캔·UT',OINS:'O-INSPECT',MMZ:'MMZ M',JUDGE:'AI 판정'};
 export const RESULT={ok:'OK',unc:'불확실',ng:'NG'};
 export const vehicleState={park:'대기·충전',out:'반입 구역으로 이동',load:'샘플 인수',in:'시료 접수로 이송',queue:'접수 대기',move:'검사 셀로 이동',work:'검사 중',ready:'후속 셀 대기',home:'스테이션 복귀'};
 
@@ -19,9 +19,9 @@ export class InspectionSession extends InspZone {
   restart(mode='dark'){
     this.events=[];this.records=[];this.trace=[];
     for(const c of Object.values(this.equipment))Object.assign(c,{state:'IDLE',remaining:0,busy:false});
-    this.sim.mode.key=mode;super.setup(this.sim,null,true);this.wallG.visible=false;
+    mode='dark';this.sim.mode.key=mode;super.setup(this.sim,null,true);this.wallG.visible=false;
     this.sourceTimer=0;this.autoIndex=0;this.sim.extMovers=this.carriers.map(c=>this.tele(c));
-    this.emit('info','정밀검사존 준비 완료',{obs:'6개 공정 노드 · 검사 AMR 3대',dec:mode==='dark'?'피지컬AI 시연 모드':'자동화 시연 모드',act:'샘플 반입 요청 대기'});
+    this.emit('info','정밀검사존 준비 완료',{obs:'5개 사업계획 셀 · 검사 AMR 3대',dec:'피지컬AI 시연 모드',act:'샘플 반입 요청 대기'});
   }
   onEvent(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
   emit(level,title,detail={}){
