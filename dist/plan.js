@@ -1,3 +1,4 @@
+import {panelGeometry} from './render-quality.js';
 import {buildPDFCells} from './pdf-cells.js';
 import {makeRobotRig,makeProduct,replaceProduct} from './shapes.js';
 import * as T from 'three';
@@ -10,13 +11,13 @@ export const PLAN=[
  {id:'A-4-4',name:'원키트 비전 센서 기술 드론 세트 Cell',short:'원키트 비전 드론',nodes:[],x:44,z:3,w:6,d:7,description:'공장 상부·창고·물류 점검 · RGB/Depth/열화상 원키트 · 실내 위치인식 · 도킹/충전 · 적재·이송 이상 → OCS'},
  {id:'A-4-5',name:'AI정밀검사(QMS) 통합 OCS 시뮬레이션 Cell',short:'QMS 통합 OCS',nodes:['JUDGE'],x:44,z:-6,w:6,d:8,description:'Cell 1~4 작업지시·장비상태·품질이력 통합 · OK/불확실/NG · 재검사 및 공정 환류 요청'}
 ];
-const mat=c=>new T.MeshStandardMaterial({color:c,roughness:.42,metalness:.3});
+const mat=c=>new T.MeshStandardMaterial({color:c,roughness:.38,metalness:.22});
 const white=mat(0xe2e8eb),blue=mat(0x176ab4),dark=mat(0x243641),orange=mat(0xe29b22),metal=mat(0x8eabb3);
-function box(g,w,h,d,x,y,z,m=white){const o=new T.Mesh(new T.BoxGeometry(w,h,d),m);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;g.add(o);return o;}
-function label(g,text,x,y,z){const e=document.createElement('div');e.className='equipment-label';e.textContent=text;const o=new CSS2DObject(e);o.position.set(x,y,z);g.add(o);return o;}
+function box(g,w,h,d,x,y,z,m=white){const o=new T.Mesh(panelGeometry(w,h,d),m);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;g.add(o);return o;}
+function label(g,text,x,y,z){const e=document.createElement('div');e.className='equipment-label';e.textContent=text;const o=new CSS2DObject(e);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;g.add(o);return o;}
 function segment(g,a,b,r,m){const dir=b.clone().sub(a),o=new T.Mesh(new T.CylinderGeometry(r,r,dir.length(),12),m);o.position.copy(a).add(b).multiplyScalar(.5);o.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),dir.normalize());g.add(o);return o;}
 // Manufacturer meshes and URDF joint transforms; no arm scaling or stretched links.
-function robot(g,x,z,cobot,sensor){const root=new T.Group();root.position.set(x,cobot?.4:0,z);g.add(root);if(cobot)box(root,.38,.4,.38,0,-.2,0,dark);const tag=label(root,cobot?'두산 H2017':'현대 HDR50-22',0,2.5,0);const carried=new T.Group();g.add(carried);return {root,tag,cobot,sensor,carried,station:g};}
+function robot(g,x,z,cobot,sensor){const root=new T.Group();root.position.set(x,cobot?.4:0,z);g.add(root);if(cobot)box(root,.38,.4,.38,0,-.2,0,dark);const tag=label(root,cobot?'두산 H2515':'현대 HDR50-22',0,2.5,0);const carried=new T.Group();g.add(carried);return {root,tag,cobot,sensor,carried,station:g};}
 function pose(r,target,model,t){
  if(r.model!==model){if(r.rig)r.root.remove(r.rig.root);r.rig=makeRobotRig(model);r.root.add(r.rig.root);r.model=model;const tip=r.rig.tcp;box(tip,r.cobot?.18:.24,.09,.12,0,0,0,r.cobot?blue:dark);if(!r.cobot)for(const x of [-.12,.12])box(tip,.035,.12,.05,x,0,.06,metal);}
  const world=r.station.localToWorld(target.clone());if(r.poseT!==t||r.poseModel!==model){r.rig.solve(world);r.poseT=t;r.poseModel=model;}r.carried.position.copy(r.station.worldToLocal(r.rig.tcp.getWorldPosition(new T.Vector3()))).add(new T.Vector3(0,-.18,0));r.carried.visible=!!r.carry;if(r.carry&&r.product)replaceProduct(r.carried,r.product);r.tag.element.textContent=(r.cobot?'두산 ':'현대 ')+model;
@@ -39,7 +40,7 @@ function route(g,points,color){const vectors=points.map(p=>new T.Vector3(...p));
 function patrol(object,path,t,speed){const u=(t*speed/path.getLength())%1;object.position.copy(path.getPointAt(u));const d=path.getTangentAt(u);object.rotation.y=Math.atan2(-d.z,d.x);}
 
 export class PlanScene{
- constructor(engine,scene,onFocus){this.engine=engine;this.root=new T.Group();scene.add(this.root);this.lastReport=0;this.visuals={};this.labels=[];this.cobot='H2017';this.handler='HDR50-22';this.focus=null;
+ constructor(engine,scene,onFocus){this.engine=engine;this.root=new T.Group();scene.add(this.root);this.lastReport=0;this.visuals={};this.labels=[];this.cobot='H2515';this.handler='HDR50-22';this.focus=null;
   for(const p of PLAN){const g=new T.Group();g.position.set(p.x,0,p.z);this.root.add(g);box(g,p.w,.035,p.d,0,.015,0,mat(p.id==='A-4-1'?0x23535a:p.id==='A-4-2'?0x284760:0x314c53));const l=label(g,p.short,0,.15,-p.d/2+.3);l.element.classList.add('plan-label');l.element.onclick=()=>onFocus(p.id);this.labels.push(l);}
   for(const c of engine.order){const g=new T.Group();g.position.set(c.def.x,0,c.def.z);g.userData.zoneCell={zone:'insp',cellId:c.id};this.root.add(g);const v={g,robots:[]};this.visuals[c.id]=v;
    if(c.id==='VIS'||c.id==='SCAN'){booth(g,c.id==='VIS'?'표면·피처 비전검사 부스':'초음파/NDT 검사 부스');box(g,1.7,.75,1.5,0,.375,-1.5,dark);box(g,1.9,.12,1.7,0,.81,-1.5,metal);v.sample=new T.Group();v.sample.position.set(0,.88,-1.5);g.add(v.sample);v.handler=robot(g,-1.3,-.4,false);v.robots.push(v.handler);if(c.id==='VIS'){v.robots.push(robot(g,-.8,-2.15,true,'ABIS'),robot(g,.8,-2.15,true,'AIMAX'));label(g,'ZEISS ABIS III · AIMAX',0,.4,.65);}else{v.robots.push(robot(g,.8,-2.15,true,'3D / UT'));label(g,'접합부 · 초음파 프로브 추종',0,.4,.65);}}

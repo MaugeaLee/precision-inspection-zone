@@ -4,7 +4,7 @@ const assets={},metadata={};
 export const PRODUCT_NAMES={hood:'후드',door:'도어',doortrim:'도어트림',eaxle:'e-axle',hblock:'유압블록',rcover:'리어커버'};
 export async function loadShapes(base='.'){
  const loader=new GLTFLoader();
- await Promise.all([...Object.keys(PRODUCT_NAMES),'H2017','H2515','HDR50-22'].map(async key=>{
+ await Promise.all([...Object.keys(PRODUCT_NAMES),'H2515','HDR50-22'].map(async key=>{
   const robot=!PRODUCT_NAMES[key],url=base+'/assets/models/'+(robot?'official/':'')+key;
   const gltf=await loader.loadAsync(url+'.glb');assets[key]=gltf.scene;
   gltf.scene.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});

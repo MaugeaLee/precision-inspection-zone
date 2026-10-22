@@ -1,3 +1,4 @@
+import {floorMaterial,contactShadows} from './render-quality.js';
 import {PDF_CELLS} from './pdf-cells.js';
 import {loadShapes} from './shapes.js';
 import {PLAN,PlanScene} from './plan.js';
@@ -25,16 +26,16 @@ function openModal(title,html){$('modal-title').textContent=title;$('modal-body'
 async function init(){
   try{
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});
-    renderer.setPixelRatio(Math.min(devicePixelRatio,1.6));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFShadowMap;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.4;
+    renderer.setPixelRatio(Math.min(Math.max(devicePixelRatio,1.5),2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;renderer.outputColorSpace=THREE.SRGBColorSpace;
     viewport.append(renderer.domElement);
-    scene=new THREE.Scene();scene.fog=new THREE.FogExp2(0x172b32,.008);
+    scene=new THREE.Scene();scene.background=new THREE.Color(0x20323e);scene.fog=new THREE.Fog(0x20323e,100,220);
     camera=new THREE.PerspectiveCamera(40,1,.1,220);camera.position.set(88,70,45);
     controls=new OrbitControls(camera,renderer.domElement);controls.target.set(33,0,-12);controls.enableDamping=true;controls.dampingFactor=.065;controls.minDistance=5;controls.maxDistance=130;controls.maxPolarAngle=Math.PI*.47;
     controls.addEventListener('start',()=>cameraGoal=null);
-    scene.add(new THREE.HemisphereLight(0xcdebf4,0x495049,2.6));
-    const sun=new THREE.DirectionalLight(0xffecd9,3);sun.position.set(18,38,-8);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-40;sun.shadow.camera.right=40;sun.shadow.camera.top=40;sun.shadow.camera.bottom=-40;sun.shadow.camera.far=110;sun.shadow.bias=-.0005;sun.target.position.set(39,0,-11);scene.add(sun,sun.target);
+    scene.add(new THREE.HemisphereLight(0xe2f2ff,0x3a434d,1.5));
+    const sun=new THREE.DirectionalLight(0xfff3df,3.2);sun.position.set(15,48,20);sun.castShadow=true;sun.shadow.mapSize.set(4096,4096);sun.shadow.camera.left=-40;sun.shadow.camera.right=40;sun.shadow.camera.top=40;sun.shadow.camera.bottom=-40;sun.shadow.camera.far=110;sun.shadow.bias=-.00015;sun.shadow.normalBias=.035;sun.shadow.radius=3;sun.target.position.set(39,0,-11);scene.add(sun,sun.target);
     const rim=new THREE.DirectionalLight(0x6cbac6,2);rim.position.set(57,12,-36);scene.add(rim);
-    const pmrem=new THREE.PMREMGenerator(renderer);const env=pmrem.fromScene(new RoomEnvironment(),.04);scene.environment=env.texture;scene.environmentIntensity=.25;pmrem.dispose();
+    const pmrem=new THREE.PMREMGenerator(renderer);const env=pmrem.fromScene(new RoomEnvironment(),.04);scene.environment=env.texture;scene.environmentIntensity=.65;pmrem.dispose();
     labelRenderer=new CSS2DRenderer();labelRenderer.domElement.className='label-layer';viewport.append(labelRenderer.domElement);
     const loader=new GLTFLoader();
     try{await Promise.all(['amr'].map(async k=>{const gltf=await loader.loadAsync('./assets/models/'+k+'.glb');gltf.scene.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});RENDER.assets[k]=gltf.scene;}));RENDER.loaded=true;}
@@ -43,15 +44,15 @@ async function init(){
     engine=new InspectionSession(scene);
     planScene=new PlanScene(engine,scene,focusPlan);
     engine.onEvent(()=>renderLog());
-    makeFloor();makeSourceBays();makeCellList();bindControls();makeRoute();
+    makeFloor();contactShadows(scene,[...engine.order.map(c=>[c.def.x,c.def.z-1.2,6,5]),[51,-25,7,6],[58,-25,6,5],[54,-15,7,6]]);makeSourceBays();makeCellList();bindControls();makeRoute();
     for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];c.el.addEventListener('pointerdown',e=>{e.stopPropagation();focusCell(c.id);});for(const p of c.plates)p.visible=false;}
     new ResizeObserver(resize).observe(viewport);resize();
     seedDemo();$('loader').hidden=true;updateUI();requestAnimationFrame(frame);
   }catch(error){console.error(error);$('loader').innerHTML='<strong>3D 화면을 시작하지 못했습니다.</strong><small>WebGL2 지원 브라우저에서 다시 열어 주세요.</small><small>'+escape(error.message)+'</small>';}
 }
 function makeFloor(){
-  const floor=new THREE.Mesh(new THREE.BoxGeometry(66,.25,48),new THREE.MeshStandardMaterial({color:0x627b80,roughness:.9}));floor.position.set(33,-.19,-13);floor.receiveShadow=true;scene.add(floor);
-  const grid=new THREE.GridHelper(66,66,0x779594,0x718a8b);grid.position.set(33,-.055,-13);grid.scale.z=48/66;grid.material.transparent=true;grid.material.opacity=.37;scene.add(grid);
+  const floor=new THREE.Mesh(new THREE.BoxGeometry(66,.25,48),floorMaterial());floor.position.set(33,-.19,-13);floor.receiveShadow=true;scene.add(floor);
+  const grid=new THREE.GridHelper(66,66,0x779594,0x718a8b);grid.position.set(33,-.055,-13);grid.scale.z=48/66;grid.material.transparent=true;grid.material.opacity=.1;scene.add(grid);
   const curbMat=new THREE.MeshStandardMaterial({color:0x243c45,roughness:.7});
   for(const z of [-37,11]){const curb=new THREE.Mesh(new THREE.BoxGeometry(66,.4,.2),curbMat);curb.position.set(33,-.01,z);scene.add(curb);}
   const laneMat=new THREE.MeshBasicMaterial({color:0x6acfb9,transparent:true,opacity:.4});
@@ -78,6 +79,7 @@ function bindControls(){
   $('overview').onclick=()=>{selected=null;planScene.focus=null;$('focus-card').hidden=true;document.querySelectorAll('[data-cell]').forEach(b=>b.classList.remove('active'));cameraGoal={position:new THREE.Vector3(88,70,45),target:new THREE.Vector3(33,0,-12)};};
   $('labels').onclick=()=>{showLabels=!showLabels;engine.setLabels(false);planScene.setLabels(showLabels);for(const c of engine.order)for(const p of c.plates)p.visible=false;$('labels').classList.toggle('active',showLabels);$('labels').setAttribute('aria-pressed',showLabels);document.querySelectorAll('.source-label').forEach(el=>el.style.visibility=showLabels?'visible':'hidden');};
   $('data-lines').onclick=()=>{showData=!showData;$('data-lines').classList.toggle('active',showData);$('data-lines').setAttribute('aria-pressed',showData);};
+  $('render-quality').onchange=()=>{const high=$('render-quality').value==='high';renderer.setPixelRatio(Math.min(Math.max(devicePixelRatio,high?1.5:1),high?2:1.5));sunQuality(high);resize();};
   $('cobot-model').onchange=()=>{planScene.cobot=$('cobot-model').value;planScene.update();};
   $('handler-model').onchange=()=>{planScene.handler=$('handler-model').value;planScene.update();};
   $('product').onchange=makeRoute;
@@ -134,7 +136,7 @@ function frame(now){
   // Keep every mechanical animation frozen during pause/protective stop.
   if(running&&!halted)engine.update(real,true,speed);planScene.update();engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
   if(cameraGoal){camera.position.lerp(cameraGoal.position,.07);controls.target.lerp(cameraGoal.target,.07);if(camera.position.distanceTo(cameraGoal.position)<.02)cameraGoal=null;}
-  controls.update();renderer.render(scene,camera);labelRenderer.render(scene,camera);
+  controls.update();renderer.render(scene,camera);arrangeLabels();labelRenderer.render(scene,camera);
   uiTimer+=real;if(uiTimer>.2){uiTimer=0;updateUI();}
   if(recorder?.state==='recording')drawRecording();requestAnimationFrame(frame);
 }
@@ -144,7 +146,7 @@ function showHistory(){
   $('export-csv').onclick=()=>{const columns=['sample_id','product_id','product','source_zone','time_seconds','result','remeasured','route','scenario','source'];const quote=v=>'"'+String(v??'').replaceAll('"','""')+'"';download(new Blob(['\ufeff'+[columns.join(','),...engine.records.map(r=>columns.map(k=>quote(r[k])).join(','))].join('\r\n')],{type:'text/csv;charset=utf-8'}),'QIS_inspection_history.csv');};
   $('export-json').onclick=()=>download(new Blob([JSON.stringify({source:'simulation',mode,records:engine.records,trace:engine.trace,events:engine.events},null,2)],{type:'application/json'}),'QIS_inspection_trace.json');
 }
-function showAbout(){openModal('정밀검사존 · 구성 및 출처',`<p>메타팩토리의 정밀검사존을 독립 실행 화면으로 분리했습니다. 사업계획서의 다섯 셀로 구성하고 공용 반입 구역과 검사 장비를 하위 공정으로 분리했습니다. AMR·판정 상태머신은 원본을 활용합니다.</p><h3>5개 셀 · 장비 구성</h3>${PLAN.map(p=>`<p><b>${p.name}</b><br>${p.description}</p>`).join('')}<p>표면·피처 검사: 두산 H2017 / H2515. 검사물 이적재: 현대 HDR50-22. 두산 H2017·H2515와 현대 HDR50-22는 제조사 공개 메시·URDF 기반입니다. HDR80-22는 공식 형상 미확보로 선택을 보류했습니다. 제품은 원본의 제품별 시각화 모델이며 실물 CAD가 아닙니다. 장비의 셀 내 배치와 검사 경로는 시연 구성안입니다. 비전검사 부스는 첨부 도면을 참고한 시연 형상이며, 생산·조립·물류 구역은 공장 전역 순찰을 보여 주는 개념 배치입니다.</p><h3>검사 경로</h3><table><tr><th>제품</th><th>검사 경로 (접수·판정 공통)</th></tr><tr><td>후드 · 도어 · 도어트림</td><td>비전검사 → 3D·UT·X-ray 시연</td></tr><tr><td>e-axle</td><td>비전검사 → O-INSPECT</td></tr><tr><td>유압블록 · 리어커버</td><td>MMZ M → O-INSPECT</td></tr></table><h3>시연 범위</h3><p>검사 동작·OK/불확실/NG·설비 이상·복구·품질 환류 요청을 모사합니다. 실제 검사장비·PLC·MQTT·AI 모델과 연결되어 있지 않습니다. 실제 도입 장비의 수량·정확도·검출 성능을 나타내지 않습니다.</p><p>불확실 판정은 O-INSPECT 재측정 후 재판정합니다. NG는 보류·리워크 검토·선행공정 보정 요청으로 기록하며, 생산 Zone의 실제 재작업 완료를 모사하지 않습니다.</p><h3>조작·영상 저장</h3><p>드래그: 회전 / 휠: 확대 / 오른쪽 드래그: 이동 / Space: 재생·일시정지 / Esc: 전체 보기. 녹화는 3D 장면·셀 라벨·시각·판정 실적을 포함한 1920×1080 WebM 영상으로 저장합니다.</p><h3>출처</h3><p><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">피지컬AI 실증 메타팩토리 · Jin Park</a><br><a href="https://github.com/theuniversepark/meta-factory" target="_blank" rel="noopener">원본 공개 저장소</a> · package.json ISC 표기<br>three.js · MIT · <a href="./vendor/three/LICENSE" target="_blank" rel="noopener">라이선스</a><br><a href="./assets/ORIGINAL_OPEN_SOURCE.md" target="_blank" rel="noopener">원본 오픈소스 고지</a> · <a href="./assets/source.json" target="_blank" rel="noopener">참조 소스 버전</a></p>`);}
+function showAbout(){openModal('정밀검사존 · 구성 및 출처',`<p>메타팩토리의 정밀검사존을 독립 실행 화면으로 분리했습니다. 사업계획서의 다섯 셀로 구성하고 공용 반입 구역과 검사 장비를 하위 공정으로 분리했습니다. AMR·판정 상태머신은 원본을 활용합니다.</p><h3>5개 셀 · 장비 구성</h3>${PLAN.map(p=>`<p><b>${p.name}</b><br>${p.description}</p>`).join('')}<p>표면·피처 검사: 두산 H2515. 검사물 이적재: 현대 HDR50-22. 두산 H2515와 현대 HDR50-22는 제조사 공개 메시·URDF 기반입니다.  제품은 원본의 제품별 시각화 모델이며 실물 CAD가 아닙니다. 장비의 셀 내 배치와 검사 경로는 시연 구성안입니다. 비전검사 부스는 첨부 도면을 참고한 시연 형상이며, 생산·조립·물류 구역은 공장 전역 순찰을 보여 주는 개념 배치입니다.</p><h3>검사 경로</h3><table><tr><th>제품</th><th>검사 경로 (접수·판정 공통)</th></tr><tr><td>후드 · 도어 · 도어트림</td><td>비전검사 → 3D·UT·X-ray 시연</td></tr><tr><td>e-axle</td><td>비전검사 → O-INSPECT</td></tr><tr><td>유압블록 · 리어커버</td><td>MMZ M → O-INSPECT</td></tr></table><h3>시연 범위</h3><p>검사 동작·OK/불확실/NG·설비 이상·복구·품질 환류 요청을 모사합니다. 실제 검사장비·PLC·MQTT·AI 모델과 연결되어 있지 않습니다. 실제 도입 장비의 수량·정확도·검출 성능을 나타내지 않습니다.</p><p>불확실 판정은 O-INSPECT 재측정 후 재판정합니다. NG는 보류·리워크 검토·선행공정 보정 요청으로 기록하며, 생산 Zone의 실제 재작업 완료를 모사하지 않습니다.</p><h3>조작·영상 저장</h3><p>드래그: 회전 / 휠: 확대 / 오른쪽 드래그: 이동 / Space: 재생·일시정지 / Esc: 전체 보기. 녹화는 3D 장면·셀 라벨·시각·판정 실적을 포함한 1920×1080 WebM 영상으로 저장합니다.</p><h3>출처</h3><p><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">피지컬AI 실증 메타팩토리 · Jin Park</a><br><a href="https://github.com/theuniversepark/meta-factory" target="_blank" rel="noopener">원본 공개 저장소</a> · package.json ISC 표기<br>three.js · MIT · <a href="./vendor/three/LICENSE" target="_blank" rel="noopener">라이선스</a><br><a href="./assets/ORIGINAL_OPEN_SOURCE.md" target="_blank" rel="noopener">원본 오픈소스 고지</a> · <a href="./assets/source.json" target="_blank" rel="noopener">참조 소스 버전</a></p>`);}
 function startRecording(){
   if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){toast('이 브라우저는 영상 녹화를 지원하지 않습니다.');return;}
   recordCanvas=document.createElement('canvas');recordCanvas.width=1920;recordCanvas.height=1080;recordContext=recordCanvas.getContext('2d');drawRecording();
@@ -179,4 +181,16 @@ function showOCS(){
  const m=planScene.monitor,s=engine.summary();
  const eventRow=(name,e)=>`<tr><td>${name}</td><td>${e?escape(e.type):'수집 대기'}</td><td>${e?`(${e.x}, ${e.z})`:'—'}</td><td>${e?time(e.time):'—'}</td><td>현장 확인 요청 · 모사</td></tr>`;
  openModal('통합 OCS · QMS 데이터 통합',`<p>시뮬레이션 ${time(engine.time)} 기준 스냅샷 · 상용 소프트웨어 연결 없음</p><div class="ocs-flow">검사·측정 → 데이터 허브 → QMS 판정 → 원인 후보 검토 → 재측정·리워크 권고 → 선행공정 환류 요청</div><h3>제품 ID 기반 품질 이력</h3><p>최종 판정 ${s.done}건 · OK ${s.ok}건 · NG ${s.ng}건 · 재측정 요청 ${s.unc}건</p><table><tr><th>제품 ID</th><th>제품</th><th>판정 이력 (중간 포함)</th><th>재측정</th></tr>${engine.records.slice(-8).reverse().map(r=>`<tr><td>${escape(r.product_id)}</td><td>${escape(r.product)}</td><td>${r.result}</td><td>${r.remeasured?'수행':'없음'}</td></tr>`).join('')||'<tr><td colspan="4">아직 최종 판정 없음</td></tr>'}</table><h3>지상·상부 모니터링 → OCS</h3><table><tr><th>구분</th><th>이벤트</th><th>공장 좌표 x,z</th><th>시각</th><th>조치</th></tr>${eventRow('4족 로봇',m.ground)}${eventRow('드론',m.air)}</table><h3>판정·환류 정책</h3><p>OK: 반출 / 불확실: O-INSPECT 재측정 / NG: 보류·리워크 검토·선행공정 보정 요청. 불량 위치·원인 후보·판정 신뢰도는 실제 분석 데이터가 없어 수치로 생성하지 않습니다.</p><h3>구성 소프트웨어</h3><p>역설계 · Process Simulation · Opcenter · Amesim · Testlab · Heeds · Insight Hub</p><p>로봇 동작·검사 경로 검토, 제조운영 연계, 모델링·시험 분석, 최적화 및 데이터 허브의 역할을 나타냅니다.</p>`);
+}
+
+function sunQuality(high){scene.traverse(o=>{if(o.isDirectionalLight&&o.castShadow){const size=high?4096:2048;o.shadow.mapSize.set(size,size);if(o.shadow.map){o.shadow.map.dispose();o.shadow.map=null;}o.shadow.needsUpdate=true;}});}
+function arrangeLabels(){
+ const width=viewport.clientWidth,height=viewport.clientHeight,labels=[];
+ scene.traverse(o=>{if(!o.isCSS2DObject||!o.element.classList.contains('equipment-label'))return;const isPlan=o.element.classList.contains('plan-label'),text=o.element.textContent;
+  const p=o.getWorldPosition(new THREE.Vector3()),distance=p.distanceTo(controls.target);
+  let eligible=showLabels&&(selected?distance<Math.max(12,PLAN.find(x=>x.id===selected)?.w??12):isPlan||['유연생산','정밀조립','적응가공','물류·창고'].includes(text)||text==='4족 로봇 · 공장 순찰'||text==='드론 · 공장 상공 점검');
+  if(/두산|현대/.test(text))eligible=eligible&&!!selected;
+  o.visible=false;if(!eligible)return;p.project(camera);if(p.z>1||p.z< -1)return;labels.push({o,x:(p.x+1)*width/2,y:(1-p.y)*height/2,w:Math.min(230,text.length*5.7+20),priority:isPlan?0:/ScanBox|X-ray|부스|ZEISS/.test(text)?1:2,distance});
+ });
+ const occupied=[];labels.sort((a,b)=>a.priority-b.priority||a.distance-b.distance);for(const l of labels){const r={x:l.x-l.w/2,y:l.y-12,w:l.w,h:25};if(r.x<0||r.y<60||r.x+r.w>width||r.y+r.h>height-70)continue;if(occupied.some(b=>r.x<b.x+b.w&&r.x+r.w>b.x&&r.y<b.y+b.h&&r.y+r.h>b.y))continue;l.o.visible=true;occupied.push(r);}
 }
