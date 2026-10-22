@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b141b">
+  <title>정밀검사 Zone · Inspection Studio</title>
+  <meta name="description" content="제품별 검사 경로와 재측정·품질 환류를 살펴보는 정밀검사존 단독 3D 시뮬레이션">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='13' fill='%23121f28'/%3E%3Cpath d='m24 9 14 8v15l-14 8-14-8V17Z' fill='none' stroke='%2363dfc3' stroke-width='3'/%3E%3Cpath d='m17 24 5 5 10-11' fill='none' stroke='%2363dfc3' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">{"imports":{"three":"./vendor/three/three.module.js","three/addons/":"./vendor/three/addons/"}}</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><svg viewBox="0 0 44 44" aria-hidden="true"><path d="m22 5 15 9v17l-15 8-15-8V14Z"/><path d="m15 22 5 5 10-11"/></svg><div><div class="eyebrow">PHYSICAL AI TESTBED / QMS</div><h1>정밀검사 <span>Zone</span></h1></div></div>
+  <div class="mode-switch" aria-label="운영 모드"><button data-mode="smart">자동화</button><button data-mode="dark" class="active">피지컬AI</button></div>
+  <div class="top-actions"><span class="sim-badge"><i></i> 시뮬레이션</span><time id="clock">08:00:00</time><button class="icon-button" id="about" title="구성·출처 안내" aria-label="구성·출처 안내">ⓘ</button></div>
+</header>
+<section class="metrics" aria-label="검사 현황">
+  <div><span>반입 샘플</span><strong id="samples">0<small>개</small></strong><em>SAMPLES</em></div>
+  <div><span>검사 진행 · 대기</span><strong id="inflight">0<small>/</small>0</strong><em>IN PROCESS / QUEUE</em></div>
+  <div><span>최종 판정</span><strong id="completed">0<small>개</small></strong><em>COMPLETED</em></div>
+  <div class="good"><span>정상 · OK</span><strong id="ok">0</strong><em>ACCEPTED</em></div>
+  <div class="warning"><span>불확실 · 재측정 요청</span><strong id="unc">0</strong><em>REMEASUREMENT EVENTS</em></div>
+  <div class="bad"><span>NG · 공정 환류 요청</span><strong id="ng">0</strong><em>QUALITY FEEDBACK</em></div>
+</section>
+<main class="workspace">
+  <aside class="cell-panel"><div class="panel-title"><h2>검사 셀</h2><span>06 STATIONS</span></div><p class="panel-sub">셀을 선택하면 동작을 가까이 봅니다.</p><div id="cell-list"></div><div class="cell-key"><span><i class="dot running"></i>검사 중</span><span><i class="dot waiting"></i>대기</span><span><i class="dot fault"></i>이상</span></div><div class="zone-foot"><span class="mini-mark">Q</span><div>AI 정밀검사 · QMS<small>제품 ID 기반 검사 이력 연결</small></div></div></aside>
+  <section class="stage" aria-label="정밀검사존 3D 애니메이션">
+    <div id="viewport"></div><div id="loader"><span class="load-ring"></span><strong>정밀검사존을 준비하고 있습니다</strong><small>검사장비 · 로봇 · AMR 불러오는 중</small></div>
+    <div class="stage-heading"><span class="section-number">A—04</span><div><h2>Precision Inspection Zone</h2><p>샘플 접수에서 품질 환류까지</p></div></div>
+    <div class="view-tools"><button id="overview" title="전체 배치로 이동">⌗ 전체 보기</button><button id="labels" class="active" aria-pressed="true">라벨</button><button id="data-lines" class="active" aria-pressed="true">데이터 흐름</button></div>
+    <div id="focus-card" class="focus-card" hidden></div>
+    <div class="scene-caption"><i></i><span>검사 AMR 3대 · 6개 공정 노드</span><span class="caption-hint">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</span></div>
+    <div class="playback"><button id="play" class="primary" aria-label="일시정지">Ⅱ 일시정지</button><div class="speeds" aria-label="재생 배속"><button data-speed="1">1×</button><button data-speed="3">3×</button><button data-speed="10" class="active">10×</button><button data-speed="30">30×</button></div><span class="toolbar-divider"></span><button id="reset" title="진행 상태를 초기화">↺ 초기화</button><button id="record"><span class="record-dot"></span> 녹화</button><button id="stop" class="stop-button">■ 보호정지</button></div>
+  </section>
+  <aside class="activity-panel"><div class="panel-title"><h2>Zone 오케스트레이터</h2><span class="live-dot">DEMO</span></div><div class="agent-card"><div class="agent-symbol">◈</div><div><strong id="agent-state">검사 작업 조정 중</strong><p>관찰 → 판단 → 작업 요청</p></div></div><div class="subhead"><h3>검사 AMR</h3><span id="amr-count">3 VEHICLES</span></div><div id="amr-list"></div><div class="subhead log-heading"><h3>운영 이벤트</h3><button id="history">품질 이력 ↗</button></div><div id="event-log" role="log" aria-label="최근 운영 이벤트"></div></aside>
+</main>
+<section class="scenario-panel" aria-label="검사 시나리오">
+  <div class="scenario-input"><div class="eyebrow">INSPECTION RECIPE</div><div class="input-row"><label for="product" class="sr-only">검사 제품</label><select id="product"><option value="hood">후드 · 유연생산</option><option value="door">도어 · 유연생산</option><option value="doortrim">도어트림 · 정밀조립</option><option value="eaxle">e-axle · 정밀조립</option><option value="hblock">유압블록 · 적응가공</option><option value="rcover">리어커버 · 적응가공</option></select><label for="outcome" class="sr-only">판정 시나리오</label><select id="outcome"><option value="ok">정상 · OK</option><option value="uncertain">불확실 → 재측정 → OK</option><option value="ng">NG → 공정 환류</option><option value="auto">혼합 판정 · 모사</option></select><button id="enqueue" class="primary">＋ 샘플 투입</button></div><label class="auto-check"><input type="checkbox" id="auto" checked> 자동 시연 <span>생산 Zone의 샘플 요청을 모사합니다.</span></label></div>
+  <div class="route-panel"><div class="subhead"><h3>제품별 검사 경로</h3><span id="route-product">후드</span></div><div id="recipe-route"></div><div class="route-legend"><span><b class="green">OK</b> 정상 반출</span><span><b class="amber">불확실</b> O-INSPECT 재측정</span><span><b class="red">NG</b> 보류 · 선행공정 환류 요청</span></div></div>
+</section>
+<footer><span>검사 동작·판정은 시나리오 모사입니다. 장비 도입 사양·실제 검사 성능을 의미하지 않습니다.</span><button id="fault">⚡ 선택 셀 이상 시연</button><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">메타팩토리 원본 ↗</a></footer>
+<div id="toast" role="status"></div>
+<dialog id="modal"><div class="modal-head"><h2 id="modal-title"></h2><button id="close-modal" aria-label="닫기">✕</button></div><div id="modal-body"></div></dialog>
+<script type="module" src="app.js"></script>
+</body></html>

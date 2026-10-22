@@ -1,0 +1,3713 @@
+// 3D 공장 모델 — 정적 레이아웃 생성 + 시뮬레이션 상태 동기화
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { RobotTelemetry } from './telemetry.js';
+import { BELT_Y, AISLE, chgLoc, FG_CAP, RAW_CAP, ST_LABEL, TOOL_KITS, SINK_PICK, LOC, MINILOAD_OUTS } from './sim.js';
+import { YARD, SHIP, SHIP_FRAME, shipToWorld, shipBayName } from './shipping.js';
+import { INBOUND, WH, WH_RACK, LOGI_DZ, XRACK, XWH, WH_ITEMS, xrackZ, stockOf, MINILOAD } from './receiving.js';
+import { DRONE_PAD, dronePad } from './drone.js';
+import { bk, fr, BUILDING, TECH_ROOM, TECH_ROOMS, ZONE_FAC, EXTRA_ZONES, LEFT_WALL, SRV, INSP_FAC, zoneDef, facOf } from './zonedefs.js';
+import { STAGES, INCIDENT_TYPES, prioOf } from './orchestrator.js';
+import { NR } from './net5g.js';
+import { blenderOn, cloneAsset, RENDER } from './blender.js';
+import { makePayloadArm, makePayloadDual } from './payload-robots.js';
+import { ROBOT_SPECS } from './robot-specs.js';
+import { makeProductMachine } from './product-machines.js';
+import { ZONE_SRC, ZONE_SINK } from './line.js';
+import { ROBOT_KINDS, toWorld, pointAt, pathLength, isZone, ZONE_CELLS, ZONE_PRODUCTS, ZONE_MIXES, ZONE_NAME, FG_ZONE_CAP, fastenT, FASTEN_RETRACT, AMR_LANES, amrPark, ZONE_AMR, AMMR, AMMR_FETCH } from './line.js';
+
+// ── 헬퍼 ─────────────────────────────
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.1, ...o });
+const emis = (color, intensity = 2) => new THREE.MeshStandardMaterial({ color: 0x111111, emissive: color, emissiveIntensity: intensity, roughness: 0.4 });
+function mesh(geo, mat, shadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = shadow; m.receiveShadow = true;
+  return m;
+}
+const box = (w, h, d, mat, shadow) => mesh(new THREE.BoxGeometry(w, h, d), mat, shadow);
+const cyl = (rt, rb, h, mat, seg = 20) => mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
+const put = (o, x, y, z, parent) => { o.position.set(x, y, z); parent?.add(o); return o; };
+// 로봇 카메라 모듈 (휴머노이드·AMMR: 머리 · 왼손 · 오른손 · 등 4대): 하우징·렌즈를 달고 앵커(+z = 보는 방향)를 돌려준다
+// 앵커는 관절(머리·손목·몸통)에 붙어 함께 움직인다 — 로봇 영상(robotcam.js)과 VLA 에피소드 카메라 프레임이 이 시점을 쓴다
+export const ROBOT_CAMS = [['head', '머리 스테레오 카메라'], ['handL', '왼손 카메라'], ['handR', '오른손 카메라'], ['back', '등 카메라']];
+const CAM_BODY = new THREE.MeshStandardMaterial({ color: 0x1b1f25, roughness: 0.4, metalness: 0.55 });
+const CAM_LENS = new THREE.MeshStandardMaterial({ color: 0x0a0d10, emissive: 0x37e8ff, emissiveIntensity: 1.8, roughness: 0.2 });
+function camModule(parent, x, y, z, pitch = 0, yaw = 0, size = 0.05, housing = true) {
+  const a = put(new THREE.Object3D(), x, y, z, parent); a.rotation.set(pitch, yaw, 0, 'YXZ');
+  if (housing) {
+    put(box(size, size * 0.72, size * 0.8, CAM_BODY, false), 0, 0, -size * 0.25, a);
+    const lens = put(cyl(size * 0.28, size * 0.3, size * 0.22, CAM_LENS, 14), 0, 0, size * 0.2, a); lens.rotation.x = Math.PI / 2; lens.castShadow = false;
+  }
+  return a;
+}
+
+const MAT = {
+  floor: std(0x55595f, { roughness: 0.92 }),
+  lane: std(0x4a5560, { roughness: 0.9 }),
+  laneLine: std(0xe8b923, { roughness: 0.7 }),
+  wall: std(0xc9ccd1, { roughness: 0.9 }),
+  steel: std(0x9aa3ad, { metalness: 0.65, roughness: 0.32 }),
+  dark: std(0x2d3238, { metalness: 0.4, roughness: 0.55 }),
+  white: std(0xe9ecef, { roughness: 0.45 }),
+  accent: std(0x1f6feb, { roughness: 0.4 }),
+  orange: std(0xf08a24, { roughness: 0.4, metalness: 0.15 }),
+  yellow: std(0xf2c230, { roughness: 0.5 }),
+  glass: new THREE.MeshPhysicalMaterial({ color: 0xa8d8ff, transparent: true, opacity: 0.18, roughness: 0.05, depthWrite: false }),
+  booth: new THREE.MeshPhysicalMaterial({ color: 0xbfe3ff, transparent: true, opacity: 0.22, roughness: 0.1, depthWrite: false }),
+  pallet: std(0xa67c52, { roughness: 0.85 }),
+  carton: std(0xc49a6c, { roughness: 0.85 }),
+  raw: std(0x7d848c, { metalness: 0.5, roughness: 0.5 }),
+  partsBin: std(0x2f6fd6, { roughness: 0.6 }),   // 입고 부품 팔레트 (부품 빈)
+  crate: std(0x8a78a8, { roughness: 0.8 }),   // e-axle 크레이트 (구분 적재장과 같은 색)
+  machined: std(0xd0d6dc, { metalness: 0.85, roughness: 0.18 }),
+  copper: std(0xc8743a, { metalness: 0.8, roughness: 0.3 }),
+  painted: std(0x2f6fd6, { metalness: 0.3, roughness: 0.3 }),
+  defect: std(0xd23b3b, { emissive: 0x550000 }),
+  rubber: std(0x1d1f22, { roughness: 0.9 }),
+  skin: std(0xe0b48c),
+  hiVis: std(0xb7f23a, { emissive: 0x1a2a00 }),
+  shirt: std(0x3d5a80),
+  tray: std(0x1f8a8a, { roughness: 0.6 }),
+  trim: std(0x3a3633, { roughness: 0.75 }),
+  trimSoft: std(0xb9a58a, { roughness: 0.85 }),
+  clip: std(0xf2f2f2, { roughness: 0.4 }),
+  housing: std(0xc4ccd4, { metalness: 0.75, roughness: 0.28 }),
+  bolt: std(0x30353b, { metalness: 0.8, roughness: 0.3 }),
+  crate: std(0x8a78a8, { roughness: 0.8 }),
+};
+// 정밀조립Zone 셀 바닥 색: 공동·공용 / 도어트림 전용 / e-axle 전용
+const ZONE_COLOR = { shared: 0x2bb3a6, doortrim: 0xf0a030, eaxle: 0x9a6bff };
+const cellUse = (id) => ZONE_CELLS[id]?.product ?? 'shared';
+
+function beltTexture() {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#26292d'; g.fillRect(0, 0, 64, 64);
+  g.fillStyle = '#3a3f45'; g.fillRect(0, 0, 10, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const BELT_TEX = beltTexture();
+
+function floorTexture() {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#8b9096'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 4000; i++) {
+    const v = 120 + Math.random() * 40;
+    g.fillStyle = `rgba(${v},${v + 2},${v + 5},0.25)`;
+    g.fillRect(Math.random() * 512, Math.random() * 512, 2, 2);
+  }
+  g.strokeStyle = 'rgba(40,44,50,0.55)'; g.lineWidth = 2;
+  for (let i = 0; i <= 512; i += 128) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, 512); g.stroke(); g.beginPath(); g.moveTo(0, i); g.lineTo(512, i); g.stroke(); }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1, 1); t.colorSpace = THREE.SRGBColorSpace;   // 반복 횟수는 바닥 크기에 맞춰 buildBuilding에서 정한다 (격자 한 칸 = 1m)
+  t.anisotropy = 8;
+  return t;
+}
+
+// ── 공용 부품 ─────────────────────────────
+function makeStackLight() {
+  const g = new THREE.Group();
+  put(cyl(0.04, 0.04, 0.9, MAT.steel), 0, 0.45, 0, g);
+  const colors = [0x30ff70, 0xffb020, 0xff3030];
+  const mats = colors.map((c) => emis(c, 0.15));
+  mats.forEach((m, i) => put(mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.16, 16), m, false), 0, 0.98 + (2 - i) * 0.17, 0, g));
+  put(cyl(0.11, 0.11, 0.05, MAT.dark), 0, 1.42, 0, g);
+  g.userData.set = (state, t) => {
+    const blink = Math.sin(t * 8) > 0;
+    const on = [0, 0, 0];
+    if (state === 'BUSY') on[0] = 1;
+    else if (state === 'ESTOP') on[2] = 1;                                  // 비상정지: 적색 점등 유지
+    else if (state === 'PSTOP') on[1] = 1;                                  // 보호정지: 황색 점등 유지
+    else if (state === 'CSTOP') on[1] = Math.sin(t * 3) > 0 ? 0.9 : 0.15;   // 사이클 정지: 황색 느린 점멸
+    else if (state === 'CHECK') on[0] = blink ? 1 : 0.15;                   // 자가진단: 녹색 점멸
+    else if (state === 'DOWN') on[2] = blink ? 1 : 0.1;
+    else if (state === 'MAINT') { on[1] = blink ? 1 : 0.1; on[2] = blink ? 0.1 : 0.8; }
+    else if (state === 'BLOCKED' || state === 'FULL' || state === 'HOLD') on[1] = blink ? 1 : 0.2;
+    else if (state !== 'OFF') on[1] = 0.8;
+    mats.forEach((m, i) => (m.emissiveIntensity = on[i] ? 3.2 * on[i] : 0.12));
+  };
+  return g;
+}
+
+// Blender 6축 팔 (RB20-1900 분위기의 독자 디자인): makeArm과 같은 관절 그룹·치수에 관절별 Blender 마디(Seg_*)를 배율 s로 붙인다
+function makeArmBlender(mat, s) {
+  const A = cloneAsset('arm6'), seg = (n, parent) => { const o = A.find(n); o.scale.setScalar(s); o.position.set(0, 0, 0); parent.add(o); return o; };
+  if (mat?.color && mat !== COBOT_MAT) A.mats.ArmAcc.color.copy(mat.color);   // 산업용 팔은 셀 색을 관절 링 색으로
+  const root = new THREE.Group();
+  seg('Seg_Base', root);
+  const turret = put(new THREE.Group(), 0, 0.4 * s, 0, root); seg('Seg_Turret', turret);
+  const shoulder = put(new THREE.Group(), 0, 0.42 * s, 0, turret); seg('Seg_Shoulder', shoulder);
+  const elbow = put(new THREE.Group(), 0, 1.1 * s, 0, shoulder); seg('Seg_Elbow', elbow);
+  const wrist = put(new THREE.Group(), 0, 0.9 * s, 0, elbow); seg('Seg_Wrist', wrist);
+  const wrist2 = put(new THREE.Group(), 0, 0, 0, wrist); seg('Seg_Wrist2', wrist2);
+  const flange = put(new THREE.Group(), 0, 0.13 * s, 0, wrist2); seg('Seg_Flange', flange);
+  const tip = put(new THREE.Object3D(), 0, 0.17 * s, 0, flange);
+  const pose = (yaw, a, b, c, d = 0, e = 0) => { turret.rotation.y = yaw; shoulder.rotation.x = a; elbow.rotation.x = b; wrist.rotation.x = c; wrist2.rotation.z = d; flange.rotation.y = e; };
+  const joints = () => [turret.rotation.y, shoulder.rotation.x, elbow.rotation.x, wrist.rotation.x, wrist2.rotation.z, flange.rotation.y];
+  pose(0, 0.2, 0.9, 0.5);
+  return { root, turret, shoulder, elbow, wrist, tip, pose, joints, blender: true };
+}
+function makeArm(mat, s = 1, model = null) {
+  if (blenderOn() && model) return makePayloadArm(model);
+  if (blenderOn()) return makeArmBlender(mat, s);
+  const root = new THREE.Group();
+  put(cyl(0.34 * s, 0.42 * s, 0.4 * s, MAT.dark), 0, 0.2 * s, 0, root);
+  const turret = put(new THREE.Group(), 0, 0.4 * s, 0, root);
+  put(cyl(0.27 * s, 0.3 * s, 0.35 * s, mat), 0, 0.17 * s, 0, turret);
+  const shoulder = put(new THREE.Group(), 0, 0.42 * s, 0, turret);
+  put(mesh(new THREE.SphereGeometry(0.2 * s, 16, 12), mat), 0, 0, 0, shoulder);
+  put(box(0.22 * s, 1.1 * s, 0.24 * s, mat), 0, 0.55 * s, 0, shoulder);
+  const elbow = put(new THREE.Group(), 0, 1.1 * s, 0, shoulder);
+  put(mesh(new THREE.SphereGeometry(0.16 * s, 16, 12), MAT.dark), 0, 0, 0, elbow);
+  put(box(0.17 * s, 0.9 * s, 0.17 * s, mat), 0, 0.45 * s, 0, elbow);
+  const wrist = put(new THREE.Group(), 0, 0.9 * s, 0, elbow);
+  put(mesh(new THREE.SphereGeometry(0.1 * s, 12, 10), MAT.dark), 0, 0, 0, wrist);
+  // J5(손목 비틀기)·J6(툴 플랜지 회전) — 관절 데이터를 실제 모델 값으로 보여 주기 위해 분리
+  const wrist2 = put(new THREE.Group(), 0, 0, 0, wrist);
+  const flange = put(new THREE.Group(), 0, 0.13 * s, 0, wrist2);
+  put(cyl(0.05 * s, 0.09 * s, 0.26 * s, MAT.steel), 0, 0, 0, flange);
+  put(box(0.14 * s, 0.03 * s, 0.03 * s, MAT.dark), 0, 0.12 * s, 0, flange);   // 그리퍼 핑거 (회전이 보이도록)
+  const tip = put(new THREE.Object3D(), 0, 0.17 * s, 0, flange);
+  const pose = (yaw, a, b, c, d = 0, e = 0) => { turret.rotation.y = yaw; shoulder.rotation.x = a; elbow.rotation.x = b; wrist.rotation.x = c; wrist2.rotation.z = d; flange.rotation.y = e; };
+  const joints = () => [turret.rotation.y, shoulder.rotation.x, elbow.rotation.x, wrist.rotation.x, wrist2.rotation.z, flange.rotation.y];
+  pose(0, 0.2, 0.9, 0.5);
+  return { root, turret, shoulder, elbow, wrist, tip, pose, joints };
+}
+
+// 구분 적재장 팔레타이징 로봇: 크기(배율)와 설치 위치(셀 중심에서 z 거리)
+const PALLET_ARM = { s: 1.35, z: 1.25 };
+// 2링크 역기구학: 팔 루트 기준 목표점(x, y, z)에 툴 끝이 아래를 향해 닿는 관절값 [J1, J2, J3, J4]
+function armIK(s, x, y, z) {
+  const L1 = 1.1 * s, L2 = 0.9 * s, tool = 0.3 * s, sh = 0.82 * s;
+  const yaw = Math.atan2(x, z), r = Math.hypot(x, z), wy = y + tool - sh;
+  const d = Math.min(Math.hypot(r, wy), L1 + L2 - 1e-3);
+  const b = Math.acos(Math.max(-1, Math.min(1, (d * d - L1 * L1 - L2 * L2) / (2 * L1 * L2))));
+  const a = Math.atan2(r, wy) - Math.atan2(L2 * Math.sin(b), L1 + L2 * Math.cos(b));
+  return [yaw, a, b, Math.PI - a - b];
+}
+
+// 관절 정의 (이름·단위·가동 범위) — 텔레메트리 표시용
+const DEG = Math.PI / 180;
+const UP = new THREE.Vector3(0, 1, 0);
+// 셀 휴머노이드 작업 자세 (팔마다 [어깨 앞뒤, 어깨 벌림(안쪽 +), 어깨 회전, 팔꿈치]) — 왼손은 대상물 가장자리를 누르고 오른손 툴은 윗면에
+const HUMANOID_REACH = [[-0.75, 0.45, -0.4, -0.05], [-0.65, 0.15, 0.5, -0.8]];   // 셀 바닥에서 통로 경계 바깥(zones.js HUM_SLOT_Z)에 섰을 때 손바닥·툴 끝이 대상물에 1~3cm 안으로 닿는 값 (앱에서 측정)
+const ARM_JOINTS = [
+  { name: 'J1 베이스 회전', unit: 'deg', min: -180 * DEG, max: 180 * DEG },
+  { name: 'J2 어깨', unit: 'deg', min: -90 * DEG, max: 150 * DEG },
+  { name: 'J3 팔꿈치', unit: 'deg', min: -60 * DEG, max: 170 * DEG },
+  { name: 'J4 손목 굽힘', unit: 'deg', min: -120 * DEG, max: 120 * DEG },
+  { name: 'J5 손목 비틀기', unit: 'deg', min: -120 * DEG, max: 120 * DEG },
+  { name: 'J6 툴 플랜지', unit: 'deg', min: -360 * DEG, max: 360 * DEG },
+];
+
+// 불꽃·입자 점 모양: 가운데가 밝고 가장자리로 흐려지는 원 (점 기본 모양은 네모)
+let SPARK_TEX = null;
+function sparkTex() {
+  if (SPARK_TEX || typeof document === 'undefined') return SPARK_TEX;
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const x = c.getContext('2d'), g = x.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.35, 'rgba(255,255,255,0.85)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 32, 32); SPARK_TEX = new THREE.CanvasTexture(c); return SPARK_TEX;
+}
+function makeSparks(color, n = 40, size = 0.07) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3));
+  const mat = new THREE.PointsMaterial({ color, size, map: sparkTex(), transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+  const p = new THREE.Points(geo, mat);
+  p.userData.vel = new Float32Array(n * 3); p.userData.life = new Float32Array(n);
+  p.frustumCulled = false;
+  return p;
+}
+function stepSparks(p, active, origin, dt, spread = 1.5, gravity = -6) {
+  const pos = p.geometry.attributes.position.array, vel = p.userData.vel, life = p.userData.life;
+  for (let i = 0; i < life.length; i++) {
+    life[i] -= dt;
+    if (life[i] <= 0) {
+      if (active && Math.random() < 0.5) {
+        life[i] = 0.25 + Math.random() * 0.4;
+        pos[i * 3] = origin.x; pos[i * 3 + 1] = origin.y; pos[i * 3 + 2] = origin.z;
+        vel[i * 3] = (Math.random() - 0.5) * spread; vel[i * 3 + 1] = Math.random() * spread; vel[i * 3 + 2] = (Math.random() - 0.5) * spread;
+      } else { pos[i * 3 + 1] = -100; continue; }
+    }
+    vel[i * 3 + 1] += gravity * dt;
+    pos[i * 3] += vel[i * 3] * dt; pos[i * 3 + 1] += vel[i * 3 + 1] * dt; pos[i * 3 + 2] += vel[i * 3 + 2] * dt;
+  }
+  p.geometry.attributes.position.needsUpdate = true;
+}
+
+function makeWorker(hat = 0xf2c230, vest = MAT.hiVis) {
+  const g = new THREE.Group();
+  const body = put(new THREE.Group(), 0, 0, 0, g);
+  put(mesh(new THREE.CapsuleGeometry(0.13, 0.7, 4, 8), MAT.shirt), -0.11, 0.45, 0, body);
+  put(mesh(new THREE.CapsuleGeometry(0.13, 0.7, 4, 8), MAT.shirt), 0.11, 0.45, 0, body);
+  put(mesh(new THREE.CapsuleGeometry(0.26, 0.55, 4, 10), vest), 0, 1.25, 0, body);
+  put(mesh(new THREE.SphereGeometry(0.17, 14, 10), MAT.skin), 0, 1.78, 0, body);
+  const helmet = mesh(new THREE.SphereGeometry(0.2, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), std(hat));
+  put(helmet, 0, 1.82, 0, body);
+  const armL = put(mesh(new THREE.CapsuleGeometry(0.07, 0.55, 4, 6), vest), -0.33, 1.25, 0, body);
+  const armR = put(mesh(new THREE.CapsuleGeometry(0.07, 0.55, 4, 6), vest), 0.33, 1.25, 0, body);
+  g.userData = { body, armL, armR };
+  return g;
+}
+
+function makeAGV(i) {
+  if (blenderOn()) return makeAGVBlender();
+  const g = new THREE.Group();
+  put(box(1.1, 0.32, 1.5, MAT.white), 0, 0.24, 0, g);
+  put(box(1.14, 0.06, 1.54, MAT.dark), 0, 0.1, 0, g);
+  const led = emis(0x2aa8ff, 2.5);
+  put(box(1.16, 0.05, 0.05, led, false), 0, 0.3, 0.76, g);
+  put(box(1.16, 0.05, 0.05, led, false), 0, 0.3, -0.76, g);
+  put(cyl(0.12, 0.14, 0.12, MAT.dark), 0, 0.46, 0.55, g);
+  put(box(1.0, 0.04, 1.3, MAT.steel), 0, 0.42, -0.05, g);
+  const load = put(new THREE.Group(), 0, 0.44, -0.05, g);
+  put(box(1.0, 0.12, 1.2, MAT.pallet), 0, 0.06, 0, load);
+  const crates = [];
+  for (let k = 0; k < 6; k++) {
+    const c = put(box(0.42, 0.3, 0.36, MAT.raw), -0.24 + (k % 2) * 0.48, 0.28, -0.4 + Math.floor(k / 2) * 0.4, load);
+    crates.push(c);
+  }
+  load.visible = false;
+  g.userData = { led, load, crates };
+  return g;
+}
+
+// 조립 대상물 운반 AMR — 리프트 위 지그 상판이 컨베이어 높이(BELT_Y)에 맞춰져 있다. 길이 방향이 로컬 +z
+// 제품 실물 이미지 (assets/doortrim.png · assets/eaxle.png) — 흰 바탕은 가장자리에서부터 채워 투명하게(부품 안쪽의 밝은 부분은 그대로)
+const IMG_TEX = new Map();
+function productTex(path, w, h) {
+  if (IMG_TEX.has(path)) return IMG_TEX.get(path);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8; IMG_TEX.set(path, tex);
+  const img = new Image();
+  img.onload = () => {
+    const g = cv.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+    const d = g.getImageData(0, 0, w, h), a = d.data, seen = new Uint8Array(w * h), stack = [];
+    const white = (i) => { const r = a[i * 4], gg = a[i * 4 + 1], b = a[i * 4 + 2]; return r > 226 && gg > 226 && b > 226 && Math.max(r, gg, b) - Math.min(r, gg, b) < 24; };
+    for (let k = 0; k < w; k++) stack.push(k, (h - 1) * w + k);
+    for (let k = 0; k < h; k++) stack.push(k * w, k * w + w - 1);
+    while (stack.length) { const i = stack.pop(); if (seen[i] || !white(i)) continue; seen[i] = 1; a[i * 4 + 3] = 0; const x = i % w, y = (i / w) | 0; if (x > 0) stack.push(i - 1); if (x < w - 1) stack.push(i + 1); if (y > 0) stack.push(i - w); if (y < h - 1) stack.push(i + w); }
+    g.putImageData(d, 0, 0); tex.needsUpdate = true;
+  };
+  img.src = path;
+  return tex;
+}
+// 이미지 판: 위면에 실물 이미지, 아래로 어두운 판을 겹쳐 두께감 (W × D, 두께 = layers × step)
+function makeImagePlate(tex, W, D, layers, step) {
+  const g = new THREE.Group(), top0 = 0.02 + layers * step;
+  const top = put(new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, roughness: 0.5, metalness: 0.1 })), 0, top0, 0, g);
+  top.rotation.x = -Math.PI / 2; top.castShadow = true;
+  for (let k = 1; k <= layers; k++) {
+    const m = put(new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, color: 0x4a4650, roughness: 0.8 })), 0, top0 - k * step, 0, g);
+    m.rotation.x = -Math.PI / 2;
+  }
+  g.userData.top = top0;
+  return g;
+}
+// 도어트림: AMR 지그 상판(1.1 × 0.8m) 짧은 변에 맞춘 0.8m 정사각 (이미지 비율 그대로), 트림 패널 약 5cm
+function makeDoortrimPlate() { return makeImagePlate(productTex('assets/doortrim.png', 512, 512), 0.8, 0.8, 3, 0.016); }
+// e-axle: 세로로 긴 단면 이미지(1:2)를 AMR 진행 방향(긴 변 1.1m)으로 눕혀 1.04 × 0.52m, 하우징 두께감 약 12cm. 체결 후 볼트 표시
+// Blender e-axle (원통형 동축 모터 + 감속기 + 인버터, 앞 위쪽 단면으로 권선·회전자·기어가 보임): 길이 1.04m를 AMR 진행 방향(x)으로, 체결 볼트 FastenBolts
+function makeEaxleModel() {
+  const A = cloneAsset('eaxle'), g = new THREE.Group(); g.add(A.root);
+  g.userData = { bolts: A.find('FastenBolts'), tagY: 0.66, blender: true };
+  return g;
+}
+function makeEaxlePlate() {
+  if (blenderOn()) return makeEaxleModel();
+  const g = new THREE.Group(), p = makeImagePlate(productTex('assets/eaxle.png', 256, 512), 0.52, 1.04, 6, 0.02);
+  p.rotation.y = Math.PI / 2; g.add(p);
+  const bolts = put(new THREE.Group(), 0, p.userData.top + 0.02, 0, g);
+  for (const sx of [-0.44, 0.44]) for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; put(cyl(0.022, 0.022, 0.04, MAT.bolt, 6), sx + Math.cos(a) * 0.07, 0, Math.sin(a) * 0.07, bolts); }
+  g.userData.bolts = bolts;
+  return g;
+}
+// ── Blender 옵션 모델 (assets/blender/*.glb) — 코드가 쓰는 부분(상태등 재질·적재물·로터·경광등)은 3D 모델과 같은 이름으로 넘긴다
+function makeAGVBlender() {
+  const A = cloneAsset('agv'), g = new THREE.Group(); g.add(A.root);
+  const load = put(new THREE.Group(), 0, 0.44, -0.05, g);   // 팔레트·원자재 박스 (적재 시에만)
+  put(box(1.0, 0.12, 1.2, MAT.pallet), 0, 0.06, 0, load);
+  const crates = [];
+  for (let k = 0; k < 6; k++) crates.push(put(box(0.42, 0.3, 0.36, MAT.raw), -0.24 + (k % 2) * 0.48, 0.28, -0.4 + Math.floor(k / 2) * 0.4, load));
+  load.visible = false;
+  g.userData = { led: A.mats.LED, load, crates, blender: true };
+  return g;
+}
+function makeCarrierAMRBlender() {
+  const A = cloneAsset('amr'), g = new THREE.Group(); g.add(A.root);
+  g.userData = { led: A.mats.LED, blender: true };
+  return g;
+}
+function makeForkliftBlender() {
+  const A = cloneAsset('forklift'), g = new THREE.Group(); g.add(A.root);
+  const driver = makeWorker(0xf2c230); driver.scale.setScalar(0.85); put(driver, 0, 0.55, -0.45, g);
+  const beacon = put(box(0.22, 0.14, 0.22, emis(0xffb020, 2.5), false), 0, 2.24, -0.4, g); beacon.visible = false;
+  const fork = A.find('ForkCarriage');   // 포크·캐리지 (마스트를 따라 승강) — 적재물도 포크 위에 얹혀 같이 오르내린다
+  const load = put(new THREE.Group(), 0, 0.2, 1.3, fork);
+  put(box(1.0, 0.12, 1.1, MAT.pallet), 0, 0.06, 0, load);
+  const crates = [];
+  for (let k = 0; k < 6; k++) crates.push(put(box(0.42, 0.3, 0.34, MAT.raw), -0.24 + (k % 2) * 0.48, 0.28, -0.36 + Math.floor(k / 2) * 0.36, load));
+  // 2단 적재(출하 2팔레트 동시 운반): 첫 팔레트 상자 위에 둘째 팔레트
+  const tier2 = put(new THREE.Group(), 0, 0.43, 0, load); put(box(1.0, 0.12, 1.1, MAT.pallet), 0, 0.06, 0, tier2);
+  for (let k = 0; k < 6; k++) crates.push(put(box(0.42, 0.3, 0.34, MAT.raw), -0.24 + (k % 2) * 0.48, 0.28, -0.36 + Math.floor(k / 2) * 0.36, tier2));
+  tier2.visible = false;
+  load.visible = false;
+  g.userData = { led: null, load, crates, tier2, roof: A.find('Guard'), driver, beacon, fork, blender: true };
+  return g;
+}
+function makeDroneBlender() {
+  const A = cloneAsset('drone'), g = new THREE.Group(), body = put(new THREE.Group(), 0, 0, 0, g); body.add(A.root);
+  const rotors = [0, 1, 2, 3].map((i) => A.find(`Rotor_${i}`));
+  const beam = put(mesh(new THREE.ConeGeometry(1.6, 1, 28, 1, true), new THREE.MeshBasicMaterial({ color: 0x37e8ff, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }), false), 0, -0.5, 0, g);
+  beam.visible = false;
+  g.userData = { body, rotors, beam, strobe: { material: A.mats.STROBE }, navR: A.find('NavR'), navG: A.find('NavG'), blender: true };
+  return g;
+}
+// Blender 휴머노이드 (Boston Dynamics Atlas 시각화 모델): 관절 빈 객체를 3D 모델과 같은 이름(body·armL/R·legL/R)으로 넘기고 팔꿈치·무릎을 더한다
+function makeHumanoidBlender(accent) {
+  const A = cloneAsset('humanoid'), g = new THREE.Group(); g.add(A.root);
+  A.mats.ACC.color.setHex(accent); A.mats.ACC.emissive.setHex(accent);
+  const body = A.find('Body');
+  const bin = put(box(0.42, 0.24, 0.32, std(0x2f6fd6)), 0, 1.0, 0.38, body);   // 부품 빈 (운반 중)
+  bin.visible = false;
+  const waist = A.find('Waist'), head = A.find('Head'), elbowL = A.find('Elbow_L'), elbowR = A.find('Elbow_R');
+  // 카메라 4대: 머리(얼굴판 스테레오) · 양손(손바닥 위, 손가락 쪽을 봄) · 등(백팩 위, 뒤를 봄)
+  const cams = { head: camModule(head, 0, 0.02, 0.14, 0.32, 0, 0.05, false), handL: camModule(elbowL, 0, -0.3, 0.05, Math.PI / 2, 0, 0.04), handR: camModule(elbowR, 0, -0.3, 0.05, Math.PI / 2, 0, 0.04), back: camModule(waist, 0, 0.5, -0.22, 0.2, Math.PI, 0.055) };
+  g.userData = { body, waist, head, cams, armL: A.find('Shoulder_L'), armR: A.find('Shoulder_R'), legL: A.find('Hip_L'), legR: A.find('Hip_R'),
+    elbowL, elbowR, kneeL: A.find('Knee_L'), kneeR: A.find('Knee_R'), visor: A.mats.VISOR, bin, acc: A.mats.ACC, blender: true };
+  return g;
+}
+function makeCarrierAMR() {
+  if (blenderOn()) return makeCarrierAMRBlender();
+  const g = new THREE.Group();
+  put(box(0.95, 0.3, 1.45, MAT.white), 0, 0.22, 0, g);
+  put(box(0.99, 0.07, 1.49, MAT.dark), 0, 0.08, 0, g);
+  const led = emis(0x2aa8ff, 2.5);
+  for (const z of [-0.73, 0.73]) put(box(0.97, 0.05, 0.04, led, false), 0, 0.3, z, g);
+  put(box(0.36, 0.06, 0.36, emis(0x37e8ff, 1.2), false), 0, 0.39, 0.5, g);   // 라이다
+  put(cyl(0.12, 0.12, 0.48, MAT.steel), 0, 0.6, -0.05, g);                   // 리프트
+  put(box(0.8, 0.06, 1.1, MAT.dark), 0, BELT_Y - 0.03, -0.05, g);              // 지그 상판
+  for (const [x, z] of [[-0.36, -0.55], [0.36, -0.55], [-0.36, 0.45], [0.36, 0.45]]) put(box(0.06, 0.08, 0.06, MAT.yellow, false), x, BELT_Y + 0.02, z, g);
+  g.userData = { led };
+  return g;
+}
+
+// 정밀조립Zone 셀 바닥: 가운데 AMR 진입 통로(정차 위치 표시) + 양쪽 로봇 베이스 플레이트
+function cellBase(g, len = 4.6) {
+  put(box(len, 0.06, 4.6, MAT.dark), 0, 0.03, 0, g);
+  put(box(len, 0.01, 1.5, MAT.lane), 0, 0.065, 0, g);
+  for (const z of [-0.78, 0.78]) put(box(len, 0.012, 0.07, MAT.laneLine, false), 0, 0.07, z, g);
+  for (const x of [-0.8, 0.8]) put(box(0.07, 0.012, 1.5, emis(0x37e8ff, 0.8), false), x, 0.072, 0, g);
+}
+
+function makeForklift() {
+  if (blenderOn()) return makeForkliftBlender();
+  const g = new THREE.Group();
+  put(box(1.2, 0.6, 1.7, MAT.orange), 0, 0.55, -0.2, g);
+  put(box(1.1, 0.5, 0.5, MAT.dark), 0, 0.55, -1.0, g);
+  for (const [x, z] of [[-0.6, 0.35], [0.6, 0.35], [-0.6, -0.8], [0.6, -0.8]]) {
+    const w = put(cyl(0.28, 0.28, 0.2, MAT.rubber, 14), x, 0.28, z, g); w.rotation.z = Math.PI / 2;
+  }
+  put(box(0.08, 2.2, 0.08, MAT.dark), -0.45, 1.25, 0.75, g);
+  put(box(0.08, 2.2, 0.08, MAT.dark), 0.45, 1.25, 0.75, g);
+  put(box(1.0, 0.06, 0.06, MAT.dark), 0, 2.3, 0.75, g);
+  const fork = put(new THREE.Group(), 0, 0, 0, g);   // 포크 (승강)
+  for (const x of [-0.3, 0.3]) put(box(0.12, 0.05, 1.1, MAT.steel), x, 0.15, 1.3, fork);
+  const roof = put(box(1.2, 0.06, 1.3, MAT.dark), 0, 2.1, -0.4, g);
+  for (const [x, z] of [[-0.55, 0.2], [0.55, 0.2], [-0.55, -1.0], [0.55, -1.0]]) put(box(0.05, 1.25, 0.05, MAT.dark), x, 1.45, z, g);
+  const driver = makeWorker(0xf2c230); driver.scale.setScalar(0.85); put(driver, 0, 0.55, -0.4, g);
+  const beacon = put(box(0.22, 0.14, 0.22, emis(0xffb020, 2.5), false), 0, 2.2, -0.4, g); beacon.visible = false;   // 자율 지게차 경광등
+  const load = put(new THREE.Group(), 0, 0.2, 1.3, fork);
+  put(box(1.0, 0.12, 1.1, MAT.pallet), 0, 0.06, 0, load);
+  const crates = [];
+  for (let k = 0; k < 6; k++) crates.push(put(box(0.42, 0.3, 0.34, MAT.raw), -0.24 + (k % 2) * 0.48, 0.28, -0.36 + Math.floor(k / 2) * 0.36, load));
+  // 2단 적재(출하 2팔레트 동시 운반): 첫 팔레트 상자 위에 둘째 팔레트
+  const tier2 = put(new THREE.Group(), 0, 0.43, 0, load); put(box(1.0, 0.12, 1.1, MAT.pallet), 0, 0.06, 0, tier2);
+  for (let k = 0; k < 6; k++) crates.push(put(box(0.42, 0.3, 0.34, MAT.raw), -0.24 + (k % 2) * 0.48, 0.28, -0.36 + Math.floor(k / 2) * 0.36, tier2));
+  tier2.visible = false;
+  load.visible = false;
+  g.userData = { led: null, load, crates, tier2, roof, driver, beacon, fork };
+  return g;
+}
+
+// 트럭 적재함 바닥(1.27m) 위로 팔레트를 올리는 포크 높이 (팔레트 바닥 0.2m → 1.32m)
+const TRUCK_BED_LIFT = 1.12;
+// 화물트럭 (로컬 +z = 운전석 방향). 적재함은 반투명 커튼 사이더라 실린 팔레트가 보이고, 뒷문은 도크 쪽으로 열린다
+const TRUCK_COLORS = [0x2a6fdb, 0xd23b3b, 0x2e9e6a, 0xf2a020, 0x6d5acf];
+// Blender 화물트럭 (캡오버 + 커튼 사이더 일반형): 뒷문 경첩(Door_L/R) · 후미등(TAIL) · 실린 팔레트 자리를 3D 모델과 같게 넘긴다
+function makeTruckBlender(i) {
+  const A = cloneAsset('truck'), g = new THREE.Group(), L = YARD.truckLen; g.add(A.root);
+  A.mats.CabPaint.color.setHex(TRUCK_COLORS[i % TRUCK_COLORS.length]);
+  A.root.traverse((o) => { if (o.isMesh && o.material.name === 'Tarp') { o.material.transparent = true; o.material.depthWrite = false; o.material.side = THREE.DoubleSide; o.castShadow = false; } });
+  const tail = ['Tail_L', 'Tail_R'].map((n) => A.find(n));
+  const doors = ['Door_L', 'Door_R'].map((n) => A.find(n));
+  const bumper = A.find('RearBumper'); if (bumper) bumper.position.y -= 0.25;   // 후방 범퍼를 적재함 바닥(1.13m) 아래로 — 바닥 높이에 있으면 상차하는 지게차 포크 캐리지가 범퍼를 뚫고 들어간다
+  const box8 = put(new THREE.Group(), 0, 0, -L / 2 + 3.9, g);
+  const pallets = [0, 1, 2, 3].map((k) => {
+    const pg = put(new THREE.Group(), 0, 1.27, 2.9 - k * 1.9, box8);
+    put(box(1.2, 0.12, 1.6, MAT.pallet), 0, 0.06, 0, pg);
+    const cartons = [];
+    for (let j = 0; j < 8; j++) cartons.push(put(box(0.55, 0.45, 0.75, MAT.carton), -0.29 + (j % 2) * 0.58, 0.36 + Math.floor(j / 4) * 0.47, -0.39 + (Math.floor(j / 2) % 2) * 0.78, pg));
+    pg.visible = false; return { pg, cartons };
+  });
+  g.userData = { doors, tail, pallets, blender: true };
+  return g;
+}
+function makeTruck(i) {
+  if (blenderOn()) return makeTruckBlender(i);
+  const g = new THREE.Group(), L = YARD.truckLen, W = YARD.truckW;
+  const cabMat = std(TRUCK_COLORS[i % TRUCK_COLORS.length], { roughness: 0.45, metalness: 0.3 });
+  const cab = put(new THREE.Group(), 0, 0, L / 2 - 1.15, g);
+  put(box(W, 2.4, 2.2, cabMat), 0, 1.75, 0, cab);
+  put(box(W - 0.2, 0.9, 0.05, std(0x1a2533, { roughness: 0.2, metalness: 0.6 })), 0, 2.35, 1.12, cab);   // 앞유리
+  put(box(W, 0.35, 0.3, MAT.dark), 0, 0.55, 1.05, cab);
+  for (const x of [-0.85, 0.85]) put(box(0.35, 0.18, 0.05, emis(0xfff2c0, 1.6), false), x, 0.95, 1.13, cab);
+  // 섀시·바퀴
+  put(box(W - 0.4, 0.3, L - 0.3, MAT.dark), 0, 0.6, 0, g);
+  for (const z of [L / 2 - 1.3, -L / 2 + 1.0, -L / 2 + 2.2]) for (const x of [-1.05, 1.05]) { const w = put(cyl(0.48, 0.48, 0.34, MAT.rubber, 16), x, 0.48, z, g); w.rotation.z = Math.PI / 2; }
+  // 적재함 (길이 7.8m): 바닥·앞벽은 불투명, 지붕·옆면은 반투명 커튼
+  const box8 = put(new THREE.Group(), 0, 0, -L / 2 + 3.9, g);
+  const tarp = new THREE.MeshStandardMaterial({ color: 0xdfe6ee, transparent: true, opacity: 0.32, roughness: 0.7, depthWrite: false, side: THREE.DoubleSide });
+  put(box(W, 0.14, 7.8, MAT.steel), 0, 1.2, 0, box8);
+  put(box(W, 2.6, 0.1, std(0xe8ecf0)), 0, 2.55, 3.85, box8);
+  for (const x of [-W / 2, W / 2]) put(mesh(new THREE.BoxGeometry(0.05, 2.6, 7.8), tarp, false), x, 2.55, 0, box8);
+  put(mesh(new THREE.BoxGeometry(W, 0.05, 7.8), tarp, false), 0, 3.85, 0, box8);
+  for (const z of [-3.85, -1.3, 1.3]) for (const x of [-W / 2, W / 2]) put(box(0.08, 2.6, 0.08, MAT.steel), x, 2.55, z, box8);
+  put(box(W, 0.12, 0.12, MAT.yellow), 0, 1.25, -3.92, box8);   // 뒤 범퍼
+  const doors = [-1, 1].map((sd) => { const d = put(new THREE.Group(), sd * W / 2, 2.55, -3.9, box8); put(box(W / 2, 2.6, 0.06, std(0xe8ecf0)), -sd * W / 4, 0, 0, d); return d; });
+  const tail = [-1, 1].map((sd) => put(box(0.25, 0.14, 0.05, emis(0xff3030, 1.2), false), sd * 1.0, 1.0, -L / 2 - 0.02, g));
+  // 실린 팔레트 4개 (앞쪽부터 채운다)
+  const pallets = [0, 1, 2, 3].map((k) => {
+    const pg = put(new THREE.Group(), 0, 1.27, 2.9 - k * 1.9, box8);
+    put(box(1.2, 0.12, 1.6, MAT.pallet), 0, 0.06, 0, pg);
+    const cartons = [];
+    for (let j = 0; j < 8; j++) cartons.push(put(box(0.55, 0.45, 0.75, MAT.carton), -0.29 + (j % 2) * 0.58, 0.36 + Math.floor(j / 4) * 0.47, -0.39 + (Math.floor(j / 2) % 2) * 0.78, pg));
+    pg.visible = false; return { pg, cartons };
+  });
+  g.traverse((o) => { if (o.isMesh && o.material !== tarp) o.castShadow = true; });
+  g.userData = { doors, tail, pallets };
+  return g;
+}
+
+// 순찰 드론 (쿼드콥터, 대각 약 1.1m): 몸체·암 4개·로터 4개·짐벌 카메라·항법등·착륙 스키드, 하방 관찰 빔
+function makeDrone() {
+  if (blenderOn()) return makeDroneBlender();
+  const g = new THREE.Group(), body = put(new THREE.Group(), 0, 0, 0, g);
+  const shell = std(0xe9edf2, { roughness: 0.35, metalness: 0.2 }), dark = MAT.dark;
+  put(box(0.42, 0.14, 0.52, shell), 0, 0, 0, body);
+  put(box(0.3, 0.06, 0.36, std(0x2a6fdb, { roughness: 0.4 })), 0, 0.09, 0, body);
+  const rotors = [];
+  for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+    const arm = put(box(0.06, 0.04, 0.5, dark), sx * 0.2, 0.02, sz * 0.2, body); arm.rotation.y = Math.atan2(sx, sz);
+    put(cyl(0.05, 0.05, 0.08, dark, 10), sx * 0.38, 0.06, sz * 0.38, body);
+    const rotor = put(new THREE.Group(), sx * 0.38, 0.11, sz * 0.38, body);
+    put(mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.01, 24), new THREE.MeshBasicMaterial({ color: 0x9aa4ad, transparent: true, opacity: 0.35, depthWrite: false }), false), 0, 0, 0, rotor);
+    put(box(0.4, 0.008, 0.03, dark, false), 0, 0.005, 0, rotor);
+    rotors.push(rotor);
+  }
+  for (const sx of [-1, 1]) { put(box(0.02, 0.16, 0.02, dark), sx * 0.15, -0.14, 0.12, body); put(box(0.02, 0.16, 0.02, dark), sx * 0.15, -0.14, -0.12, body); put(box(0.03, 0.02, 0.4, dark), sx * 0.15, -0.22, 0, body); }
+  const gimbal = put(new THREE.Group(), 0, -0.12, 0.2, body);
+  put(mesh(new THREE.SphereGeometry(0.07, 14, 10), dark), 0, 0, 0, gimbal);
+  put(cyl(0.03, 0.03, 0.04, emis(0x37e8ff, 2), 10), 0, 0, 0.06, gimbal).rotation.x = Math.PI / 2;
+  const navR = put(mesh(new THREE.SphereGeometry(0.03, 8, 6), emis(0xff3030, 3), false), -0.38, 0.0, 0.38, body);
+  const navG = put(mesh(new THREE.SphereGeometry(0.03, 8, 6), emis(0x3dff8a, 3), false), 0.38, 0.0, 0.38, body);
+  const strobe = put(mesh(new THREE.SphereGeometry(0.035, 8, 6), emis(0xffffff, 0.5), false), 0, 0.13, -0.24, body);
+  // 하방 관찰 빔 (순찰 점검·이벤트 확인 중에만)
+  const beam = put(mesh(new THREE.ConeGeometry(1.6, 1, 28, 1, true), new THREE.MeshBasicMaterial({ color: 0x37e8ff, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }), false), 0, -0.5, 0, g);
+  beam.visible = false;
+  g.userData = { body, rotors, beam, strobe, navR, navG };
+  return g;
+}
+
+// 휴머노이드 — makeWorker와 같은 body/armL/armR 구조라 같은 걷기·작업 동작을 쓴다 (다리는 legL/legR)
+function makeHumanoid(accent = 0xff8a2a) {
+  if (blenderOn()) return makeHumanoidBlender(accent);
+  const g = new THREE.Group();
+  const shell = std(0xe6e9ee, { roughness: 0.35, metalness: 0.2 });
+  const joint = std(0x2a2f36, { roughness: 0.5, metalness: 0.4 });
+  const acc = std(accent, { emissive: accent, emissiveIntensity: 0.35 });
+  const body = put(new THREE.Group(), 0, 0, 0, g);
+  const legs = [];
+  for (const x of [-0.12, 0.12]) {
+    const hip = put(new THREE.Group(), x, 0.92, 0, body);
+    put(mesh(new THREE.CapsuleGeometry(0.08, 0.36, 4, 8), shell), 0, -0.22, 0, hip);
+    put(mesh(new THREE.SphereGeometry(0.075, 10, 8), joint), 0, -0.45, 0.01, hip);
+    put(mesh(new THREE.CapsuleGeometry(0.07, 0.34, 4, 8), shell), 0, -0.67, 0, hip);
+    put(box(0.13, 0.06, 0.24, joint), 0, -0.89, 0.04, hip);
+    legs.push(hip);
+  }
+  put(box(0.34, 0.16, 0.2, joint), 0, 0.98, 0, body);                       // 골반
+  const waist = put(new THREE.Group(), 0, 0, 0, body);                       // 허리 위 상체 (Atlas: 360° 회전)
+  put(mesh(new THREE.CapsuleGeometry(0.19, 0.32, 4, 10), shell), 0, 1.32, 0, waist);
+  put(box(0.2, 0.12, 0.03, acc, false), 0, 1.38, 0.2, waist);                 // 가슴 상태등
+  put(cyl(0.05, 0.06, 0.08, joint), 0, 1.68, 0, waist);
+  const head = put(new THREE.Group(), 0, 1.84, 0, waist);
+  put(mesh(new THREE.SphereGeometry(0.15, 16, 12), shell), 0, 0, 0, head);
+  const visor = emis(0x37e8ff, 2.2);
+  put(box(0.22, 0.06, 0.06, visor, false), 0, 0.01, 0.12, head);
+  const arm = (x) => {
+    const sh = put(new THREE.Group(), x, 1.52, 0, waist);
+    put(mesh(new THREE.SphereGeometry(0.08, 10, 8), joint), 0, 0, 0, sh);
+    put(mesh(new THREE.CapsuleGeometry(0.06, 0.48, 4, 8), shell), 0, -0.3, 0, sh);
+    put(box(0.08, 0.1, 0.1, joint), 0, -0.62, 0, sh);
+    return sh;
+  };
+  const armL = arm(-0.27), armR = arm(0.27);
+  const bin = put(box(0.42, 0.24, 0.32, std(0x2f6fd6)), 0, 1.0, 0.38, body);   // 부품 빈 (운반 중)
+  bin.visible = false;
+  const cams = { head: camModule(head, 0, 0.02, 0.14, 0.32, 0, 0.05, false), handL: camModule(armL, 0, -0.58, 0.06, Math.PI / 2, 0, 0.04), handR: camModule(armR, 0, -0.58, 0.06, Math.PI / 2, 0, 0.04), back: camModule(waist, 0, 1.42, -0.2, 0.2, Math.PI, 0.055) };
+  g.userData = { body, waist, head, cams, armL, armR, legL: legs[0], legR: legs[1], visor, bin, acc };
+  return g;
+}
+
+// 정비원·정비 휴머노이드가 챙겨 가는 도구 (TOOL_KITS.vis): 손에 든 공구함·진단 케이스·대걸레·빗자루·소화기, 바닥에서 미는 대걸레 버킷
+function makeToolKits(g, ud) {
+  const handOf = (sd) => { const el = sd > 0 ? ud.elbowR : ud.elbowL, arm = sd > 0 ? ud.armR : ud.armL; return el ? [el, -0.42] : arm?.isMesh ? [arm, -0.36] : [arm, -0.66]; };
+  const [hR, yR] = handOf(1), [hL, yL] = handOf(-1);
+  const red = std(0xc0392b, { roughness: 0.4 }), yel = std(0xf2b21b, { roughness: 0.45 }), gray = std(0x9aa3ad, { roughness: 0.35, metalness: 0.7 });
+  const anchors = [];
+  const kit = (parts) => { const k = new THREE.Group(); k.visible = false; parts(k); anchors.push(k.parent); return k; };
+  const kits = {
+    toolbox: kit((k) => { const a = put(new THREE.Group(), 0, yR - 0.2, 0, hR); a.add(k); put(box(0.42, 0.2, 0.2, red), 0, 0, 0, k); put(box(0.26, 0.04, 0.04, MAT.dark), 0, 0.13, 0, k); }),
+    diag: kit((k) => { const a = put(new THREE.Group(), 0, yR - 0.17, 0, hR); a.add(k); put(box(0.32, 0.22, 0.1, yel), 0, 0, 0, k); put(box(0.18, 0.08, 0.012, MAT.dark), 0, 0.03, 0.056, k); }),
+    mop: kit((k) => { const a = put(new THREE.Group(), 0, yR, 0, hR); a.add(k); put(cyl(0.014, 0.014, 1.3, gray, 10), 0, -0.35, 0.05, k); put(cyl(0.09, 0.09, 0.14, std(0xe6e3dc), 14), 0, -1.0, 0.05, k); }),
+    broom: kit((k) => { const a = put(new THREE.Group(), 0, yR, 0, hR); a.add(k); put(cyl(0.012, 0.012, 1.2, std(0x2e9e6a), 10), 0, -0.3, 0.05, k); put(box(0.32, 0.12, 0.06, MAT.dark), 0, -0.92, 0.05, k); }),
+    extinguisher: kit((k) => { const a = put(new THREE.Group(), 0, yR - 0.3, 0, hR); a.add(k); put(cyl(0.085, 0.085, 0.5, red, 16), 0, 0, 0, k); put(cyl(0.03, 0.03, 0.08, MAT.dark, 10), 0, 0.29, 0, k); }),
+  };
+  // 대걸레 버킷(바퀴): 몸 앞 바닥에서 밀고 간다 · 빗자루를 들면 다른 손에 쓰레받기
+  const bucket = put(new THREE.Group(), 0.25, 0, 0.55, g); bucket.visible = false;
+  put(box(0.42, 0.3, 0.32, yel), 0, 0.2, 0, bucket); put(box(0.2, 0.14, 0.28, MAT.dark), 0.12, 0.42, 0, bucket);
+  const pan = put(new THREE.Group(), 0, yL - 0.12, 0, hL); pan.visible = false;
+  put(box(0.26, 0.03, 0.24, std(0x2a6fdb)), 0, 0, 0.08, pan);
+  const panA = pan; anchors.push(panA);
+  return { kits, extra: { mop: bucket, broom: pan }, anchors };
+}
+
+// 휴머노이드 충전 도크: 대기 자리에 등을 대고 서면 등 배터리 팩 높이의 접점 암으로 충전 (로컬 +z = 로봇이 보는 쪽)
+function makeHumanoidDock() {
+  const g = new THREE.Group();
+  put(box(0.95, 0.06, 0.95, std(0x2c3138, { roughness: 0.6 })), 0, 0.03, 0, g);
+  put(box(0.95, 0.065, 0.08, MAT.yellow), 0, 0.033, 0.44, g);
+  for (const x of [-0.12, 0.12]) put(box(0.1, 0.012, 0.16, std(0xc8743a, { metalness: 0.8, roughness: 0.3 })), x, 0.066, 0.02, g);   // 발 접점
+  put(box(0.5, 1.75, 0.18, std(0xdfe3e8, { roughness: 0.45 })), 0, 0.875, -0.43, g);       // 충전 기둥
+  put(box(0.54, 0.06, 0.22, std(0x2c3138)), 0, 1.78, -0.43, g);
+  put(box(0.3, 0.12, 0.16, std(0x2c3138)), 0, 1.33, -0.3, g);                               // 접점 암 (등 배터리 팩 높이)
+  put(box(0.24, 0.1, 0.02, std(0xc8743a, { metalness: 0.8, roughness: 0.3 })), 0, 1.33, -0.215, g);
+  const led = emis(0x2aa8ff, 1.2);
+  for (const x of [-0.2, 0.2]) put(box(0.04, 1.2, 0.02, led, false), x, 0.95, -0.333, g);
+  const scr = emis(0x2aa8ff, 0.8); put(box(0.22, 0.12, 0.012, scr, false), 0, 1.6, -0.334, g);
+  g.userData = { led, scr };
+  return g;
+}
+
+// 사족보행 로봇 — 등 위 센서 마스트(열화상·음향 카메라)로 순찰 점검
+// Blender 사족보행 (Boston Dynamics Spot 시각화 모델): 관절 빈 객체(Body · Hip_i · Knee_i · Cam)를 3D 모델과 같은 이름·순서로 넘긴다
+function makeQuadrupedBlender() {
+  const A = cloneAsset('quadruped'), g = new THREE.Group(); g.add(A.root);
+  const legs = [0, 1, 2, 3].map((i) => ({ hip: A.find(`Hip_${i}`), knee: A.find(`Knee_${i}`), roll: A.find(`HipRoll_${i}`) }));
+  const cam = A.find('Cam');
+  // Cam 노드는 Blender에서 가져온 회전을 갖고 있고 렌즈는 그 로컬 +x 쪽 — 쓸어보기는 이 기본 자세 위에 더하고, 스캔 빔도 렌즈 방향으로 낸다 (로컬 +z로 내면 옆을 비춘다)
+  const camRest = cam.quaternion.clone(), lensDir = (A.find('InspectionLens')?.position.clone() ?? new THREE.Vector3(0, 0, 1)).setY(0).normalize();
+  const scanMat = new THREE.MeshBasicMaterial({ color: 0xff7a3d, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const beam = put(new THREE.Mesh(new THREE.ConeGeometry(0.9, 2.6, 18, 1, true), scanMat), lensDir.x * 1.4, 0, lensDir.z * 1.4, cam);
+  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), lensDir.clone().negate()); beam.visible = false;   // 원뿔 꼭짓점이 카메라 쪽
+  g.userData = { body: A.find('Body'), bodyRestHeight: A.find('Body').position.y, legs, cam, camRest, beam, blender: true, nativeSpot: true };
+  return g;
+}
+function makeQuadruped() {
+  if (blenderOn()) return makeQuadrupedBlender();
+  const g = new THREE.Group();
+  const shell = std(0xf2c230, { roughness: 0.45 });
+  const dark = std(0x23272c, { roughness: 0.5, metalness: 0.4 });
+  const body = put(new THREE.Group(), 0, 0.55, 0, g);
+  put(box(0.36, 0.2, 0.9, shell), 0, 0, 0, body);
+  put(box(0.3, 0.12, 0.2, dark), 0, 0.02, 0.5, body);
+  put(box(0.2, 0.04, 0.03, emis(0x37e8ff, 2), false), 0, 0.04, 0.6, body);
+  put(cyl(0.025, 0.025, 0.35, dark, 8), 0.08, 0.27, -0.2, body);
+  const cam = put(new THREE.Group(), 0.08, 0.47, -0.2, body);
+  put(box(0.16, 0.12, 0.14, dark), 0, 0, 0, cam);
+  put(cyl(0.035, 0.035, 0.05, emis(0xff6a3d, 2), 10), 0, 0, 0.08, cam).rotation.x = Math.PI / 2;
+  const legs = [];
+  for (const [x, z] of [[-0.21, 0.36], [0.21, 0.36], [-0.21, -0.36], [0.21, -0.36]]) {
+    const hip = put(new THREE.Group(), x, -0.05, z, body);
+    put(box(0.07, 0.28, 0.07, dark), 0, -0.13, 0, hip);
+    const knee = put(new THREE.Group(), 0, -0.27, 0, hip);
+    put(box(0.05, 0.26, 0.05, dark), 0, -0.12, 0, knee);
+    put(mesh(new THREE.SphereGeometry(0.04, 8, 6), MAT.rubber), 0, -0.25, 0, knee);
+    legs.push({ hip, knee });
+  }
+  const scanMat = new THREE.MeshBasicMaterial({ color: 0xff7a3d, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const beam = put(new THREE.Mesh(new THREE.ConeGeometry(0.9, 2.6, 18, 1, true), scanMat), 0, 0, 1.4, cam);
+  beam.rotation.x = -Math.PI / 2;
+  beam.visible = false;
+  g.userData = { body, legs, cam, beam };
+  return g;
+}
+
+function makeMaintBot() {
+  const g = new THREE.Group();
+  put(box(0.9, 0.4, 1.0, MAT.white), 0, 0.3, 0, g);
+  put(box(0.94, 0.1, 1.04, MAT.orange), 0, 0.12, 0, g);
+  const arm = makeArm(MAT.orange, 0.45); put(arm.root, 0, 0.5, 0.15, g);
+  const beacon = emis(0xff9b2a, 3);
+  put(mesh(new THREE.SphereGeometry(0.08, 10, 8), beacon, false), -0.3, 0.6, -0.35, g);
+  g.userData = { arm, beacon };
+  return g;
+}
+
+// ── 경보 표시 (설비 고장·공급 차질·현장 이벤트): 바닥 테두리 + 경광등 + 빛기둥, 깜빡임은 update에서 ─────────────────
+export function makeAlarmFx(w, d, h = 4.2) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.9, depthWrite: false, toneMapped: false });
+  const t = 0.16;
+  for (const [x, z, sx, sz] of [[0, -d / 2, w, t], [0, d / 2, w, t], [-w / 2, 0, t, d], [w / 2, 0, t, d]]) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(sx, sz), mat); m.rotation.x = -Math.PI / 2; m.position.set(x, 0.03, z); g.add(m);
+  }
+  const fill = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.12, depthWrite: false, toneMapped: false }));
+  fill.rotation.x = -Math.PI / 2; fill.position.y = 0.025; g.add(fill);
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 12), mat); beacon.position.y = h + 0.6; g.add(beacon);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.45, h, 16, 1, true), new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, toneMapped: false }));
+  beam.position.y = h / 2; g.add(beam);
+  g.userData = { mats: [mat, fill.material, beam.material], base: [0.9, 0.12, 0.18], beacon };
+  g.visible = false;
+  return g;
+}
+// color: 경보 색, t: 시간 — 0.9초 주기로 깜빡인다 (동작 줄이기 설정이면 고정 표시)
+const REDUCED_MOTION = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+export function blinkAlarmFx(g, on, color, t) {
+  g.visible = on; if (!on) return;
+  const k = REDUCED_MOTION ? 1 : 0.35 + 0.65 * (Math.sin(t * Math.PI * 2 / 0.9) > 0 ? 1 : 0.15);
+  g.userData.mats.forEach((m, i) => { m.color.setHex(color); m.opacity = g.userData.base[i] * k; });
+  g.userData.beacon.scale.setScalar(REDUCED_MOTION ? 1 : 0.85 + 0.3 * k);
+}
+// 설비·벽에 가려지지 않는 경고 표지 (Sprite)
+export function makeSignSprite(text, hex, width = 6) {
+  const c = document.createElement('canvas'); c.width = 640; c.height = 128;
+  const x = c.getContext('2d');
+  x.fillStyle = 'rgba(12,14,18,0.88)'; x.beginPath(); x.roundRect(4, 4, 632, 120, 26); x.fill();
+  x.lineWidth = 8; x.strokeStyle = hex; x.stroke();
+  x.fillStyle = hex; x.font = '800 54px "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(text, 320, 68);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, toneMapped: false }));
+  sp.scale.set(width, width / 5, 1); sp.renderOrder = 10;
+  return sp;
+}
+// 벽에 붙은 간판 — 스프라이트처럼 화면을 따라 돌지 않고 벽 방향에 고정된다. 앞면(그룹 +z)은 벽 바깥, 뒷면은 벽 안쪽에서 읽힌다.
+// 그룹을 벽 위치에 두고 rotation.y로 바깥 방향을 맞춘다 (판은 벽 두께 0.3m 양쪽으로 0.18m씩 띄움)
+export function makeSignPlate(text, hex, width = 6) {
+  const c = document.createElement('canvas'); c.width = 640; c.height = 128;
+  const x = c.getContext('2d');
+  x.fillStyle = 'rgba(12,14,18,0.94)'; x.beginPath(); x.roundRect(4, 4, 632, 120, 26); x.fill();
+  x.lineWidth = 8; x.strokeStyle = hex; x.stroke();
+  x.fillStyle = hex; x.font = '800 54px "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(text, 320, 68);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false });
+  const g = new THREE.Group(), geo = new THREE.PlaneGeometry(width, width / 5);
+  const front = new THREE.Mesh(geo, mat); front.position.z = 0.18; g.add(front);
+  const back = new THREE.Mesh(geo, mat); back.position.z = -0.18; back.rotation.y = Math.PI; g.add(back);
+  return g;
+}
+// 미니로드 토트 (600 × 400 규격 토트를 화면에서 보이게 키운 크기) · 롤러 컨베이어 (x0 → x1 방향, 폭 w, 윗면 높이 y)
+const TOTE = { x: 0.62, y: 0.34, z: 0.55 };
+function mlConveyor(g, x0, x1, z, y, w) {
+  const len = x1 - x0, cx = (x0 + x1) / 2;
+  for (const s of [-1, 1]) put(box(len, 0.1, 0.04, MAT.dark), cx, y - 0.05, z + (s * w) / 2, g);   // 옆 프레임
+  for (let x = x0 + 0.08; x < x1 - 0.04; x += 0.14) put(cyl(0.03, 0.03, w - 0.04, MAT.steel, 8), x, y - 0.03, z, g).rotation.x = Math.PI / 2;   // 롤러
+  if (y > 0.3 && !g.userData.legless) for (const x of [x0 + 0.06, x1 - 0.06]) for (const s of [-1, 1]) put(box(0.05, y - 0.08, 0.05, MAT.dark), x, (y - 0.08) / 2, z + s * (w / 2 - 0.03), g);   // 다리
+}
+// 로봇 고유 ID 명판 (작은 스프라이트)
+function idPlate(text) {
+  const F = '800 40px Menlo, "SF Mono", Consolas, monospace', c = document.createElement('canvas'), m = c.getContext('2d');
+  m.font = F; c.width = Math.max(256, Math.ceil(m.measureText(text).width) + 36); c.height = 72;   // 긴 ID(확장 Zone FLX-RB-C01-1 등)는 명판을 옆으로 늘린다
+  const x = c.getContext('2d'), W = c.width;
+  x.fillStyle = 'rgba(10,12,16,0.88)'; x.beginPath(); x.roundRect(2, 2, W - 4, 68, 14); x.fill();
+  x.lineWidth = 4; x.strokeStyle = '#ffb020'; x.stroke();
+  x.fillStyle = '#ffb020'; x.font = F; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(text, W / 2, 38);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, toneMapped: false }));
+  sp.scale.set(0.78 * W / 256, 0.22, 1); return sp;
+}
+export const ALARM_COLOR = { fault: 0xff3030, supply: 0xff8a1f, event: 0xffc21f };
+
+// ── 공정 설비 ─────────────────────────────
+function stationBase(g, len = 4.2, depth = 3.6) {
+  put(box(len, 0.15, depth, MAT.dark), 0, 0.075, 0, g);
+  const beltMat = new THREE.MeshStandardMaterial({ map: BELT_TEX.clone(), roughness: 0.8 });
+  beltMat.map.repeat.set(len / 0.5, 1);
+  put(box(len, BELT_Y - 0.15, 1.2, [MAT.steel, MAT.steel, beltMat, MAT.steel, MAT.steel, MAT.steel]), 0, 0.15 + (BELT_Y - 0.15) / 2, 0, g);
+  return beltMat;
+}
+
+function buildCNC(g) {
+  const product = makeProductMachine('vf2', g, [0, 0, -2.15]); if (product) return product;
+  const parts = {};
+  put(box(4.2, 0.5, 3.3, MAT.white), 0, 0.4, -0.05, g);
+  put(box(4.2, 2.6, 0.12, MAT.white), 0, 1.45, -1.65, g);
+  put(box(0.12, 1.5, 3.3, MAT.white), -2.04, 2.0, -0.05, g);
+  put(box(0.12, 1.5, 3.3, MAT.white), 2.04, 2.0, -0.05, g);
+  put(box(4.24, 0.14, 3.34, MAT.accent), 0, 2.8, -0.05, g);
+  put(box(4.2, 1.5, 0.05, MAT.glass, false), 0, 2.0, 1.6, g);
+  put(box(4.22, 0.12, 0.12, MAT.accent), 0, 1.2, 1.6, g);
+  const head = put(new THREE.Group(), 0, 2.2, 0, g);
+  put(box(0.7, 0.7, 0.7, MAT.dark), 0, 0.15, 0, head);
+  const spindle = put(cyl(0.12, 0.12, 0.4, MAT.steel), 0, -0.4, 0, head);
+  put(cyl(0.03, 0.05, 0.3, MAT.machined), 0, -0.35, 0, spindle);
+  const panel = put(box(0.6, 1.0, 0.25, MAT.dark), 2.5, 1.2, 1.3, g);
+  const scr = emis(0x58c4ff, 1.2);
+  put(box(0.45, 0.32, 0.02, scr, false), 0, 0.2, 0.14, panel);
+  parts.head = head; parts.spindle = spindle; parts.screen = scr;
+  parts.sparks = put(makeSparks(0xfff1c4, 30, 0.05), 0, 0, 0, g);
+  return parts;
+}
+
+// ── 로봇 (종류별 모델 + 공통 애니메이션 인터페이스) ─────────────────
+const COBOT_MAT = std(0xb9c1ca, { roughness: 0.5 });
+const COBOT_JOINT = std(0x2a7fff, { roughness: 0.35 });
+
+// 양팔 로봇(RB-Y1) 접촉 작업: 대상물이 셀에 서 있는 동안 이동 베이스가 대상물 쪽으로 다가가(차체 앞 0.95m 이상 — AMR 차체와 닿지 않게) 상체를 숙이고,
+// 두 손을 대상물 가까운 쪽 윗모서리에 댄다 (IK). 작업 역할은 손을 모서리를 따라 움직이고, 고정 역할은 그대로 잡고 있는다. ap(0 → 1)가 다가감·숙임·손 뻗기의 진행
+// o: { slot: {x, z} 부모 로컬 기본 자리, box: {min, max} 부모 로컬 대상물 상자, ap, hold, t }
+const AMMR_LEAN = [0, 0.35, 0.15, 0, 0, 0];   // 몸통 숙임 (torso_1·2 앞으로 — 어깨 약 0.5m 앞 · 0.12m 아래)
+function ammrContact(r, o) {
+  if (!r.body || !r.arms?.[0]?.ik) return false;
+  const [x0, y0, z0] = o.box.min, [x1, y1, z1] = o.box.max, cz = (z0 + z1) / 2, f = Math.sign(cz - o.slot.z) || 1;   // 로봇은 통로 양쪽(z ±)에서 셀 중심선을 본다 — 앞(f)으로 곧게 다가간다
+  const near = f > 0 ? z0 : z1, w = Math.max(0.05, Math.min(0.22, (x1 - x0) / 2 - 0.06));
+  const tx = o.fixX ? o.slot.x : Math.min(Math.max(o.slot.x, x0 + w + 0.06), x1 - w - 0.06), tz = near - f * 0.5;   // 두 손 사이가 대상물 폭 안에 오도록 옆으로만 맞추고(fixX: 옆 장애물이 있으면 그대로), 가까운 모서리 0.5m 앞에 선다
+  const stopZ = f > 0 ? Math.min(tz, -0.95) : Math.max(tz, 0.95);   // AMR 차체와 닿지 않게 셀 중심에서 0.95m 안으로는 들어가지 않는다
+  const key = [x0, y0, z0, x1, y1, z1, o.slot.x, o.slot.z].map((v) => v.toFixed(2)).join() + (o.hold ? 'h' : 'w') + (o.fixX ? 'x' : '');
+  if (r.contactKey !== key) {   // 손 경유점은 대상물이 바뀔 때만 푼다 (다 다가가 숙인 자세에서)
+    const keep = r.root.position.clone();
+    r.root.position.set(tx, keep.y, stopZ); r.body.pose(...AMMR_LEAN); r.root.updateWorldMatrix(true, true);
+    const P = r.root.parent;
+    // 낮은 대상물(판재 등)은 가까운 윗모서리를 위에서, 높은 대상물(e-axle 하우징 등 0.25m 넘게)은 가까운 옆면 높이 60%를 앞에서 댄다 — 위에서 대면 아래팔이 둥근 몸통을 뚫는다
+    // 그리퍼 손끝(TCP · 손가락 반지름 1.2cm)을 대상물 면에 대고, 손목은 그 면의 바깥 법선 쪽에 둔다 (손가락이 면을 향함): 윗면은 위에서, 옆면은 로봇 쪽에서
+    const tall = y1 - y0 > 0.25, cl = (x) => Math.min(Math.max(x, x0 + 0.04), x1 - 0.04);
+    const pt = (lat, inset) => tall ? new THREE.Vector3(cl(tx + lat), y0 + (y1 - y0) * 0.6, near - f * 0.012) : new THREE.Vector3(cl(tx + lat), y1 + 0.012, near + f * inset);
+    const loc = (p) => r.root.worldToLocal(P.localToWorld(p.clone())), nrm = (p) => loc(p.clone().add(tall ? new THREE.Vector3(0, 0, -f) : new THREE.Vector3(0, 1, 0))).sub(loc(p));
+    r.contactQ = r.arms.map((a, k) => {
+      const sd = (k ? -1 : 1) * f, A = pt(sd * w, 0.06), B = o.hold ? A : tall ? A.clone().add(new THREE.Vector3(0, 0.08, 0)) : pt(sd * Math.max(0.04, w - 0.1), 0.14);   // 왼팔(k 0)은 로봇의 왼쪽 · 작업 손은 모서리를 따라(높은 대상물은 옆면을 위아래로) 움직인다
+      const q = (p) => { const L = loc(p), d = nrm(p); return a.ik(L.x, L.y, L.z, d); };
+      return { idle: a.home, a: q(A), b: q(B) };
+    });
+    r.body.pose(); r.root.position.copy(keep); r.contactKey = key;
+  }
+  r.root.position.x = o.slot.x + (tx - o.slot.x) * o.ap; r.root.position.z = o.slot.z + (stopZ - o.slot.z) * o.ap;
+  r.body.pose(...AMMR_LEAN.map((v, i) => v * o.ap + (i === 5 && !o.hold ? Math.sin(o.t * 1.6) * 0.06 * o.ap : 0)));
+  r.arms.forEach((a, k) => {
+    const K = r.contactQ[k], s = o.hold ? 0 : Math.sin(o.t * 3 + k * Math.PI) * 0.5 + 0.5;
+    a.nativePose(...K.idle.map((v, j) => v + (K.a[j] + (K.b[j] - K.a[j]) * s - v) * o.ap));
+  });
+  return true;
+}
+// 체결 셀 오버헤드 헤드(너트러너)가 내려와도 되는 진행률: 로봇 마지막 점 → 대기 자세 복귀(animFasten 'ret' — max(0.5, per×0.4)초)가 끝나고 0.3초 뒤 — 팔이 아직 점 위(0.3m)에 있을 때 헤드가 내려오면 손목과 부딪힌다
+// 손목(마지막 관절) 비트 회전: 실물 로봇 모델(native)은 관절 한계(UR J6 ±360°)에서 잘려 1바퀴 넘게 돌지 못한다 —
+// 바퀴 수를 덜어(±2π, 같은 자세) 한계 안으로 접어 넣어 여러 바퀴를 끊김 없이 돌린다
+function wristSpin(A, q, spin) {
+  if (!spin) return q;
+  const d = A.jointDefs?.[5], T = Math.PI * 2;
+  let a = q + (spin % T);
+  if (d) { while (a > d.max) a -= T; while (a < d.min) a += T; }
+  return a;
+}
+function headAfter(st, dflt) {
+  const F = st.def.fasten; if (!F || !st.fastenPts) return dflt;
+  return Math.min(0.97, (F.setup + Math.max(...st.fastenPts) * F.per + Math.max(0.5, F.per * 0.4) + 0.3) / fastenT(F, st.fastenPts));
+}
+// 접촉 작업 접근 방향(로봇 루트 로컬): 위에서 로봇 쪽으로 약 27° 기울여 — 손목(UR 손목1·2는 툴 축에서 0.1~0.17m 비켜 있다)이 셀 가운데·마주 보는 로봇 쪽으로 나가지 않게
+const TILT = { x: 0, y: 1, z: -0.5 };
+// 대상물 모양에 따른 접촉 방식: 얇게 선 판(폭 0.15m 미만 — 후드·도어 패널)은 로봇 쪽 끝면을 옆에서, 높은 대상물(0.25m 넘게 — e-axle 하우징·블록)은 45° 기울여 위에서,
+// 그 밖은 27° 기울여 위에서 — 아래팔이 대상물 위로 넘어가지 않게
+function contactMode(box) {
+  const [x0, y0] = box.min, [x1, y1] = box.max;
+  if (x1 - x0 < 0.15) return { side: true, dir: { x: 0, y: 0.4, z: -1 } };
+  return { side: false, dir: y1 - y0 > 0.25 ? { x: 0, y: 1, z: -1 } : TILT };
+}
+// 셀 로봇마다 대상물 윗면에서 맡을 x 구간 — 같은 쪽 두 대는 왼쪽·오른쪽 반, 그 반을 마주 보는 로봇과 또 나눠(통로 −z 쪽 = 앞, +z 쪽 = 뒤) 어느 두 로봇도 같은 곳에 손목을 넣지 않는다
+// 돌려주는 값: [xa, xb, 앞 여유, 뒤 여유] — 다른 로봇과 맞닿는 경계는 0.15m, 대상물 끝은 0.06m 비운다
+function pointRange(r, robots, x0, x1) {
+  const side = Math.sign(r.slot.z), rs = robots.filter((o) => o.slot), same = rs.filter((o) => Math.sign(o.slot.z) === side), mid = (x0 + x1) / 2;
+  let [xa, xb] = same.length > 1 ? (r.slot.x < Math.max(...same.map((o) => o.slot.x)) ? [x0, mid] : [mid, x1]) : [x0, x1];
+  const inHalf = (o) => same.length < 2 || (o.slot.x < Math.max(...same.map((m) => m.slot.x))) === (r.slot.x < Math.max(...same.map((m) => m.slot.x)));
+  let face = null;
+  if (rs.some((o) => Math.sign(o.slot.z) === -side && inHalf(o))) { const m = (xa + xb) / 2; [xa, xb] = side < 0 ? [xa, m] : [m, xb]; face = m; }
+  const gap = (x) => (face != null && Math.abs(x - face) < 1e-6 ? 0.2 : 0.15);   // 마주 보는 로봇과 나눈 경계는 0.2m — 손목이 서로 마주 들어온다
+  return [xa, xb, xa > x0 + 1e-6 ? gap(xa) : 0.06, xb < x1 - 1e-6 ? gap(xb) : 0.06];
+}
+// 접촉·체결 작업 로봇의 대기 자세: 협동로봇 기본 자세는 손끝이 앞으로 1.1m · 루트 위 0.23m라 들어오는 대상물(후드·블록·e-axle) 위로 아래팔이 걸친다 — 손끝을 받침대 앞 0.35m · 0.75m 위로 접어 둔다
+function workHome(r) {
+  const A = r.arm, h = (A.home ?? A.joints()).slice(); A.pose(...h); r.root.updateWorldMatrix(true, true);
+  const t = r.root.worldToLocal(r.tip.getWorldPosition(new THREE.Vector3()));
+  return Math.hypot(t.x, t.z) > 0.6 && t.y < 0.6 ? A.ik(0, 0.75, 0.35, true) : h;
+}
+// 툴 축(J6) 둘레로 손목을 돌려 플랜지 로컬 축 local이 수평 방향 want를 향하게 한 관절값 — J6 회전 방향(거울 배치 셀은 반대)은 로봇마다 처음 한 번 시험 회전으로 잰다
+function alignTool(r, q, local, want) {
+  const A = r.arm, fl = A.flange ?? r.tip.parent, out = q.slice(), V = THREE.Vector3;
+  const read = () => { A.pose(...out); fl.updateWorldMatrix(true, false); const ax = new V(0, 1, 0).transformDirection(fl.matrixWorld); return [ax, local.clone().transformDirection(fl.matrixWorld)]; };
+  const ang = (ax, cur, w) => Math.atan2(ax.dot(cur.clone().cross(w)), cur.dot(w));
+  let [ax, cur] = read(); const w = want.clone().addScaledVector(ax, -want.dot(ax)); if (w.lengthSq() < 1e-6) return out; w.normalize();
+  if (r.j6Sign == null) { const a0 = ang(ax, cur, w); out[5] += 0.5; const [, c1] = read(); const a1 = ang(ax, c1, w); out[5] -= 0.5; r.j6Sign = Math.sign(a0 - a1) || 1; }   // J6 +0.5 rad → 남은 각이 줄면 같은 방향
+  out[5] += r.j6Sign * ang(ax, cur, w);
+  return out;
+}
+// 대상물 아랫면 높이 (부모 로컬 x·z에서 아래로부터 레이) — 없으면 윗면 − 1cm
+function surfaceBottom(obj, parent, x, z, top) {
+  const meshes = []; obj.traverse((m) => { if (m.isMesh && m.visible && m.parent?.name !== 'LiveProcessMarks') meshes.push(m); });
+  const o = parent.localToWorld(new THREE.Vector3(x, top - 0.6, z)); SURF_RAY.set(o, UP); SURF_RAY.far = 1;
+  const h = SURF_RAY.intersectObjects(meshes, false)[0];
+  return h ? parent.worldToLocal(h.point.clone()).y : top - 0.01;
+}
+// 지그·받침 상자: 운반체에서 대상물 바로 밑 높이(대상물 아랫면 − 0.15m 위)까지 올라오는 메시만 (AMR 차체는 뺀다)
+function supportBox(car, parent, pm, yMin) {
+  const bb = new THREE.Box3(), inv = parent.matrixWorld.clone().invert(); car.updateWorldMatrix(true, true);
+  car.traverse((m) => {
+    if (!m.isMesh || !m.visible) return; for (let p = m; p; p = p.parent) if (p === pm || !p.visible) return;
+    m.geometry.boundingBox ?? m.geometry.computeBoundingBox(); const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld).applyMatrix4(inv);
+    if (b.max.y > yMin) bb.union(b);
+  });
+  return bb.isEmpty() ? null : { min: bb.min.toArray(), max: bb.max.toArray() };
+}
+// 스폿용접 점 계획: 로봇 쪽 긴 가장자리 밑이 비어 있으면(판이 지그보다 0.08m 넘게 나옴) 그 가장자리, 아니면 로봇 쪽 짧은 끝 — 점은 판 가장자리에서 안쪽으로 (튀어나온 길이 − 3cm, 최대 6cm)
+// 경로 점마다 [바깥(판 높이 · 건 벌림), 점(벌림), 점(닫힘 · 위 전극이 윗면), 바깥 0.3m 위] — 건은 세워(툴 축 수직) 가장자리 바깥에서 판 높이로 밀고 들어간다
+function weldPlan(r, o, b, S, loc, A) {
+  const [x0, , z0] = b.min, [x1, y1, z1] = b.max, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, f = Math.sign(cz - r.slot.z) || 1, P = r.root.parent;
+  const ze = f > 0 ? z0 : z1, ovZ = f > 0 ? S.min[2] - z0 : z1 - S.max[2];
+  const sx = Math.sign(r.slot.x - cx) || -1, xe = sx < 0 ? x0 : x1, ovX = sx < 0 ? S.min[0] - x0 : x1 - S.max[0];
+  let pts, out;
+  if (ovZ >= 0.08) {
+    const [xa, xb, inA, inB] = pointRange(r, o.robots, x0, x1), span = xb - xa - inA - inB, z = ze + f * Math.min(0.06, ovZ - 0.03);
+    pts = Array.from({ length: o.n }, (_, k) => [span > 0 ? xa + inA + span * (o.n === 1 ? 0.5 : k / (o.n - 1)) : (xa + xb) / 2, z]); out = new THREE.Vector3(0, 0, -f);
+  } else if (ovX >= 0.08) {
+    const x = xe - sx * Math.min(0.06, ovX - 0.03), za = f > 0 ? z0 + 0.06 : cz + 0.08, zb = f > 0 ? cz - 0.08 : z1 - 0.06;   // 마주 보는 로봇과 끝을 반씩 (가운데 0.16m 비움)
+    pts = Array.from({ length: o.n }, (_, k) => [x, o.n === 1 ? (za + zb) / 2 : za + (zb - za) * k / (o.n - 1)]); out = new THREE.Vector3(sx, 0, 0);
+  } else return null;
+  const ik = (x, y, z) => { const v = loc(x, y, z); return A.ik(v.x, v.y, v.z, true); }, gap = [];
+  const pl = pts.map(([x, z]) => {
+    const top = surfaceY(o.obj, P, null, x, z, y1), bot = surfaceBottom(o.obj, P, x, z, top); gap.push(Math.max(0.004, top - bot) + 0.002);
+    const sxo = x + out.x * 0.34, szo = z + out.z * 0.34;
+    return [ik(sxo, top + 0.012, szo), ik(x, top + 0.012, z), ik(x, top + 0.001, z), ik(sxo, top + 0.3, szo)];
+  });
+  return { pl, gap, out, end: ovZ < 0.08 };
+}
+// 6축·협동로봇 접촉 작업 (확장 Zone 셀): 대상물 윗면의 자기 점 n곳을 차례로 — 툴을 세워 위에서 접근 → 손끝 접촉 → 작업 → 들어 올림 — 처리하고 대기 자세로 돌아간다
+// kind: touch(접촉·정렬·측정) · press(용접 팁·헤밍·압입 1cm 누름) · screw(체결 — 손목 끝 회전) · trace(실링 — 점과 점 사이를 붙은 채 따라 긋기)
+// o: { key(대상물·로봇마다 다름), box(), n, kind, u(작업 구간 진행 0 ~ 1 — 밖이면 대기 자세), robots(셀 로봇 전부) }
+function pointWork(r, o) {
+  const A = r.arm; if (!A?.native || !r.slot) return false;
+  const P = r.root.parent, home = r.pwHome ??= r.pwHomeAt ? (() => { const v = r.root.worldToLocal(P.localToWorld(new THREE.Vector3(r.pwHomeAt.x, r.pwHomeAt.y, r.pwHomeAt.z))); return A.ik(v.x, v.y, v.z, true); })() : workHome(r);   // pwHomeAt: 셀이 정한 대기 위치 (셀 로컬)
+  const rest = () => { r.pwContact = false; r.pwHeld = false; r.tool?.userData.setGap?.(0.04, 0); r.pwCur = r.pwCur ? r.pwCur.map((v, k) => v + (home[k] - v) * 0.15) : home.slice(); A.pose(...r.pwCur); return true; };
+  if (!(o.u > 0 && o.u < 1)) return rest();
+  if (r.pwKey !== o.key) {
+    const box = o.box(); if (!box) return rest();
+    const [x0, , z0] = box.min, [x1, y1, z1] = box.max, cz = (z0 + z1) / 2, f = Math.sign(cz - r.slot.z) || 1, hz = (z1 - z0) / 2;
+    const [xa, xb, inA, inB] = pointRange(r, o.robots, x0, x1), zP = (f > 0 ? z0 : z1) + f * Math.min(0.08, hz * 0.3);   // 자기 구간 · 로봇 쪽 가장자리 안쪽
+    const cm = contactMode(box), ikC = (x, y, z) => { const v = r.root.worldToLocal(P.localToWorld(new THREE.Vector3(x, y, z))); return A.ik(v.x, v.y, v.z, cm.dir); };
+    const span = xb - xa - inA - inB, xs = Array.from({ length: o.n }, (_, k) => span > 0 ? xa + inA + span * (o.n === 1 ? 0.5 : k / (o.n - 1)) : (xa + xb) / 2);
+    const nz = f > 0 ? z0 : z1, cx = (x0 + x1) / 2;
+    // 얇게 선 판: 로봇이 있는 쪽 판면(윗모서리 0.08m 아래)을 옆에서 — 판면 법선 방향 0.1m 앞에서 다가가 손끝을 댄다 (끝면을 대면 아래팔이 판면을 스친다)
+    const sx = Math.sign(r.slot.x - cx) || -1, fx = sx < 0 ? x0 : x1, loc = (x, y, z) => r.root.worldToLocal(P.localToWorld(new THREE.Vector3(x, y, z)));
+    const nd = ((a, b) => b.sub(a))(loc(fx, y1, nz), loc(fx + sx, y1 + 0.3, nz)), ikS = (x, y, z) => { const v = loc(x, y, z); return A.ik(v.x, v.y, v.z, nd); };
+    r.pwPlan = cm.side
+      ? xs.map((_, k) => { const z = nz + f * (0.12 + 0.25 * (o.n === 1 ? 0.5 : k / (o.n - 1))), y = y1 - 0.08; return [ikS(fx + sx * 0.1, y, z), ikS(fx + sx * 0.012, y, z), ikS(fx + sx * (o.kind === 'press' ? 0.002 : 0.008), y, z), ikS(fx + sx * 0.3, y + 0.15, z)]; })
+      : xs.map((x) => { const y = o.vertical ? y1 : o.obj ? surfaceY(o.obj, P, null, x, zP, y1) : y1;   // 세운 툴은 대상물 맨 윗면 기준 — 블록 사이 틈으로 내려가 옆 블록 옆면에 부딪히지 않게
+        const ik = o.vertical ? (x, y, z) => { const v = loc(x, y, z); return A.ik(v.x, v.y, v.z, true); } : ikC;   // o.vertical: 툴을 세워(수직) — 넓은 툴(스캐너)·굵은 몸체(스핀들)가 기울면 대상물에 들어간다
+        if (o.kind === 'scan') { const zs = cz + (zP - cz) * 0.3, ys = y1; return [ik(x, ys + 0.3, zs), ik(x, ys + 0.16, zs), ik(x, ys + 0.16, zs), ik(x, ys + 0.35, zs)]; }   // 3D 스캔: 닿지 않고 윗면 0.12m 위를 대상물 가운데 쪽으로 지나간다
+        return [ik(x, y + 0.08, zP), ik(x, y + 0.005, zP), ik(x, y - (o.kind === 'press' ? 0.01 : 0.002), zP), ik(x, y + 0.3, zP)]; });
+    if (o.align && o.support) {   // 스폿용접 C건: 아래 전극 턱이 들어갈 틈(판 밑에 지그가 없는 가장자리)에만 점을 두고, 건을 세워 그 가장자리 바깥에서 판 높이로 밀어 넣는다
+      const S = o.support(), plan = S && weldPlan(r, o, box, S, loc, A);
+      if (plan) { r.pwPlan = plan.pl; r.pwGap = plan.gap; r.pwOut = plan.out; r.pwEnd = plan.end; r.pwPick = null; r.pwKey = o.key; }
+    }
+    if (r.pwKey === o.key) { /* 용접 계획 완료 */ }
+    else if (o.pick) { const ikD = (x, y, z) => { const v = loc(x, y, z); return A.ik(v.x, v.y, v.z, true); }; r.pwPick = [ikD(o.pick.x, o.pick.y + 0.25, o.pick.z), ikD(o.pick.x, o.pick.y, o.pick.z)]; }   // 부품함: 위 · 집는 높이
+    else r.pwPick = null;
+    if (r.pwKey !== o.key) { r.pwOut = new THREE.Vector3(0, 0, -f); r.pwGap = null; r.pwKey = o.key; }   // 점에서 판 바깥쪽(로봇 쪽 가장자리 밖)
+  }
+  const pl = r.pwPlan, n = pl.length, lerp = (a, b, k) => a.map((v, j) => v + (b[j] - v) * k), ease = (k) => { k = Math.min(1, Math.max(0, k)); return k * k * (3 - 2 * k); };
+  const u = o.u; let q, spin = 0, contact = false, idx = -1; r.pwHeld = false;
+  // 대기 자세 ↔ 첫·마지막 점, 점 ↔ 점은 대상물 0.3m 위 경유점(high, pl[k][3])으로 — 관절 보간으로 곧장 가면 아래팔이 대상물 위로 처진다
+  if (u < 0.12) q = u < 0.08 ? lerp(home, pl[0][3], ease(u / 0.08)) : lerp(pl[0][3], pl[0][0], ease((u - 0.08) / 0.04));
+  else if (u > 0.9) q = u < 0.94 ? lerp(pl[n - 1][0], pl[n - 1][3], ease((u - 0.9) / 0.04)) : lerp(pl[n - 1][3], home, ease((u - 0.94) / 0.06));
+  else if (o.kind === 'trace' || o.kind === 'scan') {   // 첫 점에 내려앉아 마지막 점까지 붙은 채 따라 긋고 들어 올린다 (스캔은 윗면 위를 같은 길로)
+    const w = (u - 0.12) / 0.78;
+    if (w < 0.12) q = lerp(pl[0][0], pl[0][1], ease(w / 0.12));
+    else if (w > 0.88) q = lerp(pl[n - 1][1], pl[n - 1][0], ease((w - 0.88) / 0.12));
+    else { const s = (w - 0.12) / 0.76 * (n - 1), k = Math.min(n - 2, Math.floor(s)); q = n > 1 ? lerp(pl[k][1], pl[k + 1][1], s - k) : pl[0][1]; contact = true; }
+  } else if (r.pwPick) {   // 부품 옮겨 달기: 점마다 부품함에서 1개 집어 → 점 위 → 손끝 접촉 → 내려놓음(o.spin: 그 자리에서 너트러너로 체결) → 들어 올림 — 한 번에 1개
+    const s = (u - 0.12) / 0.78 * n, k = Math.min(n - 1, Math.floor(s)), f = s - k, [above, touch] = pl[k], high = pl[k][3], prevHigh = k ? pl[k - 1][3] : high, [pUp, pDn] = r.pwPick;
+    const sg = (a, b) => ease((f - a) / (b - a));
+    q = f < 0.14 ? lerp(prevHigh, pUp, sg(0, 0.14)) : f < 0.22 ? lerp(pUp, pDn, sg(0.14, 0.22)) : f < 0.26 ? pDn : f < 0.34 ? lerp(pDn, pUp, sg(0.26, 0.34)) : f < 0.46 ? lerp(pUp, high, sg(0.34, 0.46))
+      : f < 0.52 ? lerp(high, above, sg(0.46, 0.52)) : f < 0.6 ? lerp(above, touch, sg(0.52, 0.6)) : f < 0.84 ? touch : lerp(touch, high, sg(0.84, 1));
+    if (o.spin && f >= 0.62 && f < 0.8) spin = (f - 0.62) / 0.18 * Math.PI * 6;
+    contact = f >= 0.6 && f < 0.84; idx = k; r.pwHeld = f >= 0.24 && f < 0.8;
+  } else {
+    const s = (u - 0.12) / 0.78 * n, k = Math.min(n - 1, Math.floor(s)), f = s - k, [above, touch, work] = pl[k];
+    const high = pl[k][3], prevHigh = k ? pl[k - 1][3] : high;
+    q = !k && f < 0.3 ? above : f < 0.12 ? lerp(pl[k - 1][0], prevHigh, ease(f / 0.12)) : f < 0.22 ? lerp(prevHigh, high, ease((f - 0.12) / 0.1)) : f < 0.3 ? lerp(high, above, ease((f - 0.22) / 0.08)) : f < 0.4 ? lerp(above, touch, ease((f - 0.3) / 0.1)) : f < 0.8 ? lerp(touch, work, ease((f - 0.4) / 0.1)) : lerp(work, above, ease((f - 0.8) / 0.2));
+    if (o.kind === 'screw' && f >= 0.4 && f < 0.8) spin = (f - 0.4) / 0.4 * Math.PI * 8;
+    contact = f >= 0.42 && f < 0.8; idx = k;   // 툴 끝이 대상물에 닿아 작업 중 (용접 통전 · 압입) — zones.js가 불꽃·용접 자국을 이 구간에만
+    if (r.pwGap) r.tool?.userData.setGap?.(r.pwGap[k], f >= 0.4 && f < 0.8 ? Math.min(1, (f - 0.4) / 0.04) * (1 - Math.max(0, (f - 0.76) / 0.04)) : 0);   // C건 아래 전극: 판 두께만큼 벌린 채 들어가 닫고(가압) 다시 벌려 빠져나온다
+  }
+  r.pwCur = q.slice(); const out = q.slice(); out[5] += spin; A.pose(...out);
+  r.pwContact = contact; r.pwIdx = idx;
+  if (o.align && r.pwOut) A.pose(...alignTool(r, out, new THREE.Vector3(-1, 0, 0), r.pwOut.clone().transformDirection(P.matrixWorld)));   // C형 용접 건: 건 등(플랜지 −x)을 판 바깥쪽으로 — 아래 전극 턱이 판 가장자리 밑으로
+  return true;
+}
+// 셀 대상물의 부모 로컬 상자 (보이는 메시만 · AMR 차체 제외)
+function contactBox(obj, parent, skip) {
+  const bb = new THREE.Box3(), inv = parent.matrixWorld.clone().invert(), v = new THREE.Vector3();
+  obj.updateWorldMatrix(true, true);
+  obj.traverse((m) => {
+    if (!m.isMesh || !m.visible) return;
+    for (let p = m; p && p !== obj; p = p.parent) if (!p.visible || p === skip) return;
+    m.geometry.boundingBox ?? m.geometry.computeBoundingBox(); const b = m.geometry.boundingBox;
+    for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) bb.expandByPoint(v.set(x, y, z).applyMatrix4(m.matrixWorld).applyMatrix4(inv));
+  });
+  return bb.isEmpty() ? null : { min: bb.min.toArray(), max: bb.max.toArray() };
+}
+
+// 대상물 실제 윗면 높이 (부모 로컬 x·z에서 위로부터 레이) — 상자 윗면이 아니라 둥근 하우징·패널의 그 자리 높이에 손끝을 댄다 (없으면 상자 윗면)
+const SURF_RAY = new THREE.Raycaster(), DOWN = new THREE.Vector3(0, -1, 0);
+function surfaceY(obj, parent, skip, x, z, top) {
+  const meshes = []; obj.traverse((m) => { if (!m.isMesh || !m.visible) return; for (let p = m; p && p !== obj; p = p.parent) if (!p.visible || p === skip) return; meshes.push(m); });
+  const o = parent.localToWorld(new THREE.Vector3(x, top + 0.5, z)); SURF_RAY.set(o, DOWN); SURF_RAY.far = 2;
+  const h = SURF_RAY.intersectObjects(meshes, false)[0];
+  return h ? parent.worldToLocal(h.point.clone()).y : top;
+}
+
+function makeRobot(kind, color, opts = {}) {
+  if (kind === 'articulated' || kind === 'cobot') {
+    const cobot = kind === 'cobot';
+    const spec = ROBOT_SPECS[kind];
+    const arm = blenderOn() ? makePayloadArm(kind) : makeArm(cobot ? COBOT_MAT : color, cobot ? 1.75 / 2.3 : 2.05 / 2.3);
+    if (cobot && !arm.native) put(cyl(0.13, 0.13, 0.08, COBOT_JOINT), 0, 0.18, 0, arm.turret);
+    if (cobot) {
+      const pedestal = put(new THREE.Mesh(new THREE.BoxGeometry(.5,.5,.5), new THREE.MeshStandardMaterial({color:0x687581,metalness:.55,roughness:.45})),0,-.25,0,arm.root);
+      pedestal.name='CobotPedestal'; pedestal.castShadow=true; pedestal.receiveShadow=true; pedestal.userData.dimensionsMeters=[.5,.5,.5];
+    }
+    // Industry camera follows the physical housing's optical axis.
+    const wristCameraAnchor = arm.cameraAnchor ?? camModule(arm.tip, .08, -.04, 0, -Math.PI / 2, 0, .035);
+    const speed = cobot ? 1.4 : 2.2;
+    return {
+      root: arm.root, kind, spec, tip: arm.tip, jointDefs: arm.jointDefs ?? ARM_JOINTS, joints: arm.joints, payload: spec.payload, arm, scale: cobot ? 1.75 / 2.3 : 2.05 / 2.3, wristCam: true, wristCameraAnchor,
+      anim(busy, t) {
+        if (arm.native) { const q = arm.home.slice(); if (busy) { q[0] += Math.sin(t * speed) * .35; q[1] += Math.sin(t * speed * .7) * .14; q[2] += Math.cos(t * speed) * .15; q[5] += Math.sin(t * speed * .6) * .5; } arm.pose(...q); return; }
+        if (busy) {
+          const w = t * speed;
+          arm.pose(Math.sin(w) * 0.35, 0.7 + Math.sin(w * 1.3) * 0.12, 1.25 + Math.cos(w) * 0.1, 0.75, Math.sin(w * 0.9) * 0.3, Math.sin(w * 0.6) * 1.6);
+        } else arm.pose(0, 0.25, 0.9, 0.5, 0, 0);
+      },
+    };
+  }
+  if (kind === 'ammr' && blenderOn()) return makePayloadDual(camModule);
+  if (kind === 'ammr') {
+    // AMR 기반 양팔 로봇: 이동 플랫폼(바퀴·라이다) + 승강 몸통 + 양팔(각 6축) + 머리 카메라. 로컬 +z가 작업 쪽(통로)
+    const root = new THREE.Group();
+    let led, bin, lift, head;
+    if (blenderOn()) {   // Blender AMMR (RB-Y1 분위기의 독자 디자인): 이동 베이스 · 몸통 기둥 · 가슴 · 카메라 머리. 팔은 아래에서 6축 팔(Blender 마디)로 단다
+      const A = cloneAsset('ammr'); root.add(A.root);
+      led = A.mats.LED; lift = A.find('Lift'); head = A.find('Head');
+      bin = put(box(0.36, 0.18, 0.26, std(0x2f6fd6)), 0, 0.44, -0.2, root); bin.visible = false;   // 선반에서 가져오는 부품 빈
+    } else {
+      put(box(0.82, 0.3, 0.64, MAT.white), 0, 0.2, 0, root);
+      put(box(0.86, 0.07, 0.68, MAT.dark), 0, 0.06, 0, root);
+      for (const [x, z] of [[-0.34, 0.24], [0.34, 0.24], [-0.34, -0.24], [0.34, -0.24]]) put(cyl(0.08, 0.08, 0.06, MAT.rubber, 12), x, 0.07, z, root).rotation.z = Math.PI / 2;
+      led = emis(0x2aa8ff, 2.2);
+      put(box(0.84, 0.04, 0.03, led, false), 0, 0.3, 0.33, root);
+      put(cyl(0.07, 0.07, 0.06, MAT.dark, 14), 0, 0.38, 0.24, root);                          // 라이다
+      bin = put(box(0.36, 0.18, 0.26, std(0x2f6fd6)), 0, 0.44, -0.2, root); bin.visible = false;   // 선반에서 가져오는 부품 빈
+      lift = put(new THREE.Group(), 0, 0.35, -0.05, root);
+      put(box(0.2, 0.62, 0.2, MAT.steel), 0, 0.31, 0, lift);
+      put(box(0.5, 0.3, 0.3, COBOT_MAT), 0, 0.72, 0, lift);                                    // 가슴
+      put(box(0.52, 0.05, 0.31, MAT.orange), 0, 0.6, 0, lift);
+      head = put(new THREE.Group(), 0, 0.98, 0.02, lift);
+      put(box(0.2, 0.16, 0.18, MAT.dark), 0, 0, 0, head);
+      put(box(0.16, 0.05, 0.02, emis(0x37e8ff, 2), false), 0, 0.01, 0.1, head);                 // 스테레오 카메라
+    }
+    const arms = [-1, 1].map((sd) => {
+      const a = makeArm(COBOT_MAT, 0.46);
+      put(a.root, sd * 0.33, 0.7, 0, lift); a.root.rotation.z = -sd * 0.35;                   // 어깨에서 바깥쪽으로 약간 기울여 장착
+      put(cyl(0.06, 0.06, 0.05, COBOT_JOINT), 0, 0.09, 0, a.turret);
+      return a;
+    });
+    const sideNames = ['왼팔', '오른팔'];
+    // 카메라 4대: 머리 스테레오(작업대를 내려다봄) · 양손 손목(그리퍼 방향) · 등(몸통 뒤 — 선반·통로 쪽)
+    const cams = { head: camModule(head, 0, 0.01, 0.11, 0.6, 0, 0.05, false), handL: camModule(arms[0].tip, 0.045, -0.02, 0, -Math.PI / 2, 0, 0.035), handR: camModule(arms[1].tip, 0.045, -0.02, 0, -Math.PI / 2, 0, 0.035), back: camModule(lift, 0, 0.8, -0.16, 0.25, Math.PI, 0.05) };
+    return {
+      root, kind, tip: arms[0].tip, tip2: arms[1].tip, head, bin, payload: 10, dual: true, arms, lift, cams,
+      jointDefs: [{ name: '몸통 승강', unit: 'mm', min: 0, max: 0.12 },
+        ...sideNames.flatMap((n) => ARM_JOINTS.map((j) => ({ ...j, name: `${n} ${j.name}` })))],
+      joints: () => [lift.position.y - 0.35, ...arms[0].joints(), ...arms[1].joints()],
+      // 작업 ↔ 대기 전환 때 자세가 튀지 않도록 목표 자세로 부드럽게 따라간다 (관절 속도·토크 값도 자연스러워짐)
+      cur: null,
+      anim(busy, t) {
+        const w = t * 1.5;
+        const target = [busy ? 0.06 + Math.sin(w * 0.5) * 0.04 : 0, busy ? Math.sin(w * 0.7) * 0.35 : 0];
+        arms.forEach((a, i) => {
+          const ph = w + i * Math.PI * 0.5, sd = i ? -1 : 1;   // 두 팔이 엇갈려 집고 놓는다
+          target.push(...(busy ? [sd * (0.3 + Math.sin(ph) * 0.25), 0.8 + Math.sin(ph * 1.3) * 0.15, 1.2 + Math.cos(ph) * 0.12, 0.7, Math.sin(ph * 0.9) * 0.3, Math.sin(ph * 0.6) * 1.4]
+            : [sd * 0.2, 0.3, 1.0, 0.5, 0, 0]));
+        });
+        this.cur = this.cur ? this.cur.map((c, i) => c + (target[i] - c) * 0.12) : target;
+        const c = this.cur;
+        lift.position.y = 0.35 + c[0];
+        head.rotation.y = c[1];
+        arms.forEach((a, i) => a.pose(...c.slice(2 + i * 6, 8 + i * 6)));
+        led.emissive.setHex(busy ? 0x3ddc84 : 0x2aa8ff);
+      },
+    };
+  }
+  if (kind === 'scara') {
+    const root = new THREE.Group();
+    put(cyl(0.22, 0.28, 2.1, MAT.dark), 0, 1.05, 0, root);   // 퀼 하단이 AMR 위 대상물(약 1.3m) 위에서 멈추는 높이
+    const l1 = put(new THREE.Group(), 0, 2.15, 0, root);
+    put(box(0.26, 0.2, 0.9, color), 0, 0, 0.45, l1);
+    const l2 = put(new THREE.Group(), 0, 0, 0.9, l1);
+    put(cyl(0.14, 0.14, 0.24, MAT.dark), 0, 0, 0, l2);
+    put(box(0.22, 0.16, 0.75, color), 0, 0.02, 0.37, l2);
+    const quill = put(cyl(0.04, 0.04, 0.8, MAT.steel), 0, -0.2, 0.72, l2);
+    put(box(0.12, 0.03, 0.03, MAT.dark), 0, -0.4, 0, quill);   // 흡착 패드 (J4 회전이 보이도록)
+    const tip = put(new THREE.Object3D(), 0, -0.42, 0, quill);
+    return {
+      root, kind, tip, payload: 3,
+      jointDefs: [
+        { name: 'J1 제1 링크', unit: 'deg', min: -130 * DEG, max: 130 * DEG },
+        { name: 'J2 제2 링크', unit: 'deg', min: -145 * DEG, max: 145 * DEG },
+        { name: 'J3 상하 스트로크', unit: 'mm', min: 0, max: 0.3 },
+        { name: 'J4 회전', unit: 'deg', min: -360 * DEG, max: 360 * DEG },
+      ],
+      joints: () => [l1.rotation.y, l2.rotation.y, -0.2 - quill.position.y, quill.rotation.y],
+      anim(busy, t) {
+        const w = t * 3;
+        l1.rotation.y = busy ? Math.sin(w) * 0.5 : 0;
+        l2.rotation.y = busy ? -Math.sin(w * 1.2) * 0.8 : 0.3;
+        quill.position.y = busy ? -0.2 - Math.max(0, Math.sin(w * 2)) * 0.25 : -0.2;
+        quill.rotation.y = busy ? Math.sin(w * 0.7) * 1.4 : 0;
+      },
+    };
+  }
+  if (kind === 'humanoid') {
+    // 휴머노이드 로봇: 물류·정비 휴머노이드와 같은 몸(사람형 양팔 — 어깨 3축 + 팔꿈치)으로 셀 작업 위치에 서서 대상물에 두 손을 대고 작업. 머리에 스테레오 카메라. 로컬 +z가 작업 쪽
+    // 왼손은 대상물 가장자리를 눌러 잡고, 오른손은 보수 툴(재용접 토치·재도포 노즐)을 대상물 윗면에 대고 짧게 오가며 작업 — 이따금 허리를 돌려 옆 부품을 머리 카메라로 확인
+    const root = makeHumanoid(0xff8a2a), ud = root.userData, torso = ud.waist, head = ud.head, legs = [ud.legL, ud.legR], cams = ud.cams;
+    const sh = [ud.armL, ud.armR], el = [ud.elbowL, ud.elbowR];
+    const hand = (k) => put(new THREE.Object3D(), 0, el[k] ? -0.42 : -0.62, 0, el[k] ?? sh[k]);   // 손바닥 가운데 (carryPose와 같은 기준점)
+    const tips = [hand(0), hand(1)];
+    const tool = put(new THREE.Group(), 0, -0.03, 0.03, tips[1]); tool.rotation.x = 0.9;   // 오른손에 쥔 보수 툴: 손잡이 + 노즐 — 아래팔에서 아래로 약 50° 꺾여 팔을 앞으로 뻗으면 노즐 끝이 대상물 윗면을 향한다
+    put(box(0.05, 0.1, 0.05, MAT.dark), 0, 0, 0, tool); put(cyl(0.012, 0.018, 0.14, MAT.steel, 10), 0, -0.12, 0, tool);
+    const tipT = put(new THREE.Object3D(), 0, -0.19, 0, tool);   // 노즐 끝 (TCP)
+    const sideNames = ['왼팔', '오른팔'];
+    const ARM = [{ name: '어깨 앞뒤', min: -170 * DEG, max: 60 * DEG }, { name: '어깨 벌림', min: -90 * DEG, max: 90 * DEG }, { name: '어깨 회전', min: -90 * DEG, max: 90 * DEG }, { name: '팔꿈치', min: -150 * DEG, max: 0 }];
+    const REST = [0.05, 0.06, 0, -0.15], REACH = HUMANOID_REACH;
+    return {
+      root, kind, tip: tipT, tip2: tips[0], head, payload: 15, torso, legs, cams, humanoidArms: true,
+      // Atlas형: 허리 360° 연속 회전 · 머리 좌우 180°(±90°) · 팔마다 어깨 3축 + 팔꿈치
+      jointDefs: [{ name: '허리 회전', unit: 'rad', min: -Math.PI, max: Math.PI }, { name: '머리 회전', unit: 'rad', min: -Math.PI / 2, max: Math.PI / 2 },
+        ...sideNames.flatMap((n) => ARM.map((j) => ({ ...j, name: `${n} ${j.name}`, unit: 'deg' })))],
+      joints: () => [Math.atan2(Math.sin(torso.rotation.y), Math.cos(torso.rotation.y)), head.rotation.y, ...[0, 1].flatMap((k) => [sh[k].rotation.x, sh[k].rotation.z, sh[k].rotation.y, el[k]?.rotation.x ?? 0])],
+      cur: null,
+      anim(busy, t, p = 0.5) {
+        const w = t * 1.4, sm = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+        // 대상물이 셀에 서 있는 작업 구간(진행 0.1~0.85 — zones.js CELL_WORK.rework)에만 두 손을 대상물에 댄다
+        const on = busy ? sm(0.04, 0.12, p) * (1 - sm(0.83, 0.9, p)) : 0;
+        // 손을 떼고 있을 때(작업 구간 앞뒤) 이따금 허리를 옆 부품 쪽으로 크게 돌려(약 100°) 머리 카메라로 부품을 확인하고 돌아온다 · 발은 그대로
+        const turn = busy ? (1 - on) * Math.max(0, Math.sin(w * 0.22)) ** 6 * 1.75 : 0;
+        const target = [busy ? Math.sin(w * 0.45) * 0.05 * on + turn : 0, busy ? Math.sin(w * 0.7) * 0.2 : 0];
+        [0, 1].forEach((k) => {
+          const sd = k ? -1 : 1, R = REACH[k], stroke = k ? Math.sin(w * 2.6) * 0.15 : 0;   // 오른손: 툴을 윗면을 따라 좌우로 짧게 오가며 (재용접·재도포 비드)
+          const work = [R[0], sd * R[1], R[2] + stroke, R[3]], rest = [REST[0], sd * REST[1], REST[2], REST[3]];
+          target.push(...rest.map((v, j) => v + (work[j] - v) * on));
+        });
+        this.cur = this.cur ? this.cur.map((c, i) => c + (target[i] - c) * 0.12) : target;
+        const c = this.cur;
+        torso.rotation.y = c[0]; head.rotation.y = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, c[1] - c[0] * 0.3));
+        [0, 1].forEach((k) => { const o = 2 + k * 4; sh[k].rotation.set(c[o], c[o + 2], c[o + 1]); if (el[k]) el[k].rotation.x = c[o + 3]; });
+        // 작업 중에는 무게중심을 옮기며 다리를 살짝 굽혔다 편다
+        const kk = busy ? Math.sin(w * 0.9) * 0.05 : 0;
+        legs.forEach((h, j) => { h.rotation.x = (j ? -kk : kk); });
+      },
+    };
+  }
+  if (kind === 'gantry') {
+    // 직교 3축 갠트리: 양쪽 X축 레일(고정 프레임) 위를 브리지가 주행(X) → 브리지 위 캐리지가 가로 이송(Y) → 수직 축 승강(Z)
+    const root = new THREE.Group(), xr = opts.xr ?? 1.0, L = 2 * xr + 0.7;
+    let bridge, car, rod;
+    if (blenderOn()) {   // Blender 갠트리 (산업용 일반형): 기둥·X축 빔은 셀 길이에 맞춰 복제·늘리고, 브리지·캐리지·승강축은 3D 모델과 같은 그룹에 붙인다
+      const A = cloneAsset('gantry'), part = (n) => A.find(n);
+      if (color?.color) A.mats.GantryAcc.color.copy(color.color);
+      for (const z of [-1.6, 1.6]) {
+        for (const x of [-L / 2, L / 2]) { const p = part('Post').clone(); p.position.set(x, 0, z); root.add(p); }
+        const xb = part('XBeam').clone(); xb.position.set(0, 0, z); xb.scale.x = L + 0.14; root.add(xb);
+      }
+      bridge = put(new THREE.Group(), 0, 0, 0, root); bridge.add(part('Bridge'));
+      car = put(new THREE.Group(), 0, 2.7, 0, bridge); car.add(part('Carriage'));
+      rod = put(new THREE.Group(), 0, -0.6, 0, car); rod.add(part('ZAxis'));
+    } else {
+      for (const z of [-1.6, 1.6]) {
+        for (const x of [-L / 2, L / 2]) put(box(0.14, 2.6, 0.14, MAT.yellow), x, 1.3, z, root);   // 기둥 4개
+        put(box(L + 0.14, 0.16, 0.16, MAT.yellow), 0, 2.68, z, root);                                // X축 레일
+        put(box(L, 0.03, 0.05, MAT.steel), 0, 2.78, z, root);                                        // 리니어 가이드
+      }
+      bridge = put(new THREE.Group(), 0, 0, 0, root);                                          // X축 주행 브리지
+      put(box(0.22, 0.2, 3.4, MAT.yellow), 0, 2.86, 0, bridge);
+      for (const z of [-1.6, 1.6]) put(box(0.34, 0.16, 0.26, MAT.dark), 0, 2.86, z, bridge);          // 레일 위 주행 블록
+      car = put(new THREE.Group(), 0, 2.7, 0, bridge);                                         // Y축 캐리지
+      put(box(0.36, 0.26, 0.36, color), 0, 0, 0, car);
+      rod = put(box(0.08, 1.0, 0.08, MAT.steel), 0, -0.6, 0, car);                             // Z축
+      put(box(0.34, 0.06, 0.26, MAT.dark), 0, -0.5, 0, rod);
+    }
+    const tip = put(new THREE.Object3D(), 0, -0.53, 0, rod);
+    // 집기 → 들어 올림 → X·Y 이동 → 내려놓기 → 복귀 (키프레임: [진행, X, Y, Z 하강])
+    const K = [[0, -1, -0.8, 0], [0.12, -1, -0.8, 1], [0.22, -1, -0.8, 1], [0.32, -1, -0.8, 0], [0.55, 0.55, 0.7, 0], [0.65, 0.55, 0.7, 1], [0.73, 0.55, 0.7, 1], [0.82, 0.55, 0.7, 0], [1, -1, -0.8, 0]];
+    const ease = (f) => f * f * (3 - 2 * f);
+    return {
+      root, kind, tip, payload: 30,
+      jointDefs: [
+        { name: 'X축 주행', unit: 'mm', min: -xr, max: xr },
+        { name: 'Y축 이송', unit: 'mm', min: -1.2, max: 1.2 },
+        { name: 'Z축 승강', unit: 'mm', min: 0, max: 0.5 },
+      ],
+      joints: () => [bridge.position.x, car.position.z, -0.6 - rod.position.y],
+      anim(busy, t) {
+        let x = 0, y = 0, zd = 0;
+        if (busy) {
+          const u = (t * 0.28) % 1, k = K.findIndex((q) => q[0] >= u), a = K[Math.max(0, k - 1)], b = K[k];
+          const f = ease(b[0] > a[0] ? (u - a[0]) / (b[0] - a[0]) : 1);
+          x = (a[1] + (b[1] - a[1]) * f) * xr; y = a[2] + (b[2] - a[2]) * f; zd = a[3] + (b[3] - a[3]) * f;
+        }
+        bridge.position.x += (x - bridge.position.x) * 0.25;
+        car.position.z += (y - car.position.z) * 0.25;
+        rod.position.y += (-0.6 - zd * 0.45 - rod.position.y) * 0.3;
+      },
+    };
+  }
+  return null;
+}
+
+// ── 조립·체결 부품 (Blender 실물 형상 assets/blender/parts.glb) — 셀별 부품 빈·피더·로봇 그리퍼에 놓는다
+const CELL_PARTS = {
+  DT_ASSY: ['P_CupHolder', 'P_Armrest', 'P_Grille', 'P_Switch'],   // 도어트림 조립: 컵홀더 · 암레스트 · 스피커 그릴 · 윈도 스위치
+  EA_ASSY: ['P_Gear', 'P_Shaft', 'P_Bearing', 'P_Seal'],            // e-axle 조립: 헬리컬 기어 · 샤프트 · 베어링 · 오일씰
+  DT_FAST: ['P_Screw', 'P_Clip', 'P_Washer', 'P_Nut'],              // 도어트림 체결: 나사 · 트림 클립 · 와셔 · 너트
+  EA_FAST: ['P_Bolt', 'P_Nut', 'P_Washer', 'P_Screw'],              // e-axle 체결: 플랜지 볼트 · 너트 · 와셔 · 나사
+};
+const SMALL_PART = new Set(['P_Screw', 'P_Bolt', 'P_Nut', 'P_Washer', 'P_Clip']);
+const cellParts = (st) => (blenderOn() && RENDER.assets.parts ? CELL_PARTS[st?.id] ?? null : null);
+function partClone(name) { const src = RENDER.assets.parts?.getObjectByName(name); if (!src) return null; const o = src.clone(); o.position.set(0, 0, 0); return o; }
+// 부품 더미: w × d 면적 위에 부품 여러 개 (작은 체결 부품은 6개, 큰 부품은 2개) — 바닥 = 0
+function partPile(name, w, d, seed = 0) {
+  const g = new THREE.Group(), n = SMALL_PART.has(name) ? 6 : 2, cols = n > 2 ? 3 : 2, rows = Math.ceil(n / cols);
+  for (let k = 0; k < n; k++) {
+    const o = partClone(name); if (!o) break;
+    const cx = cols > 1 ? ((k % cols) / (cols - 1) - 0.5) * w * 0.55 : 0, cz = rows > 1 ? (Math.floor(k / cols) / (rows - 1) - 0.5) * d * 0.5 : 0;
+    o.position.set(cx, 0, cz); o.rotation.y = ((k * 2.39 + seed * 1.7) % (Math.PI * 2));
+    if (SMALL_PART.has(name) && name !== 'P_Washer' && name !== 'P_Nut' && (k + seed) % 2) { o.rotation.z = Math.PI / 2; o.position.y = 0.012; }   // 나사·볼트 일부는 눕혀서
+    g.add(o);
+  }
+  return g;
+}
+// 색 부품 빈(상자 메시) 위에 그 빈의 부품을 담는다
+function fillBins(bins, names) {
+  if (!names) return;
+  bins.forEach((b, k) => {
+    const pr = b.geometry?.parameters; if (!pr) return;
+    const pile = partPile(names[k % names.length], pr.width, pr.depth, k);
+    pile.position.set(0, pr.height / 2 - 0.002, 0); b.add(pile);   // 빈의 자식 — 빈이 숨으면(부품 소진) 같이 숨는다
+  });
+}
+
+// 공정 테이블 둘레에 로봇 배치 — 뒤/앞 교대로, 갠트리는 라인 방향으로 나란히
+function placeRobots(g, st) {
+  const group = new THREE.Group(); g.add(group);
+  const robots = [];
+  const { kind, count } = st.def.robot ?? { kind: 'none', count: 0 };
+  if (!count || kind === 'none') return { group, robots };
+  const color = st.type === 'paint' ? MAT.white : MAT.orange;
+  const zr = st.type === 'paint' ? 1.4 : 1.7;
+  // 정밀조립Zone: AMR 통로를 사이에 두고 양쪽에서 마주 보는 배치
+  // 피지컬AI VLA: 6축 로봇은 대상물에 손이 닿도록 통로 쪽으로 조금 더 다가선다 (AMR 통과 폭은 유지)
+  const vla = st.vla && (kind === 'cobot' || kind === 'articulated');
+  // 체결·압입 셀의 협동로봇(UR20 도달 1.75m)은 셀 중심에서 1.25m — 툴을 세워 대상물 윗면의 점에 닿도록 (1.75m면 손끝이 못 미친다) · AMR(반폭 0.49m)·대상물은 받침대 앞으로 지나간다
+  const zz = st.def.fasten && kind === 'cobot' ? 1.25 : vla ? 1.4 : 1.75;
+  const slots = st.zoneLine ? [[-0.75, -zz, 0], [-0.75, zz, Math.PI], [0.95, -zz, 0], [0.95, zz, Math.PI]]
+    : [[-0.6, -zr, 0], [0.6, zr, Math.PI], [1.3, -zr, 0], [-1.3, zr, Math.PI]];
+  // 갠트리는 대수만큼 셀 길이를 나눠 X축 주행 범위를 정한다 (1대: ±1.0m)
+  const gx = count === 1 ? 1.0 : Math.max(0.3, 1.2 / (count - 1) - 0.25);
+  for (let i = 0; i < count; i++) {
+    const r = makeRobot(kind, color, kind === 'gantry' ? { xr: gx } : {});
+    if (kind === 'gantry') put(r.root, count === 1 ? 0 : -1.2 + (2.4 * i) / (count - 1), 0.15, 0, group);
+    else {
+      const [x, z, yaw] = slots[i];
+      // AMMR은 이동 플랫폼 깊이(0.64m)만큼 통로에서 조금 더 떨어져 도킹한다
+      put(r.root, x, kind === 'ammr' ? 0.06 : kind === 'cobot' ? .5 : 0.15, kind === 'ammr' ? Math.sign(z) * AMMR.slotZ : z, group); r.root.rotation.y = yaw;
+      r.slot = { x, z: kind === 'ammr' ? Math.sign(z) * AMMR.slotZ : z, yaw, side: Math.sign(z) };
+    }
+    r.phase = i * 1.3;
+    r.root.traverse((o) => { o.userData.robotIdx = i; });
+    robots.push(r);
+  }
+  // AMMR 셀: 로봇이 오가는 부품 선반 — 시뮬레이션이 정한 자리(st.ammrRacks: 셀 긴 쪽 바깥, 통로·AMR 경로와 겹치면 셀 옆쪽)
+  // 앞면이 로봇을 향한다. 같은 자리를 쓰는 로봇끼리는 선반 하나를 같이 쓴다
+  const racks = [];
+  const plans = kind === 'ammr' ? robots.map((r, i) => st.ammrRacks?.[i] ?? { mode: 'z', rack: { x: r.slot.x, z: r.slot.side * AMMR.rackZ }, side: r.slot.side }) : [];
+  robots.forEach((r, i) => { if (plans[i]) r.plan = plans[i]; });
+  const seen = new Map();
+  for (const pl of plans) {
+    const key = `${pl.rack.x.toFixed(2)},${pl.rack.z.toFixed(2)}`; if (seen.has(key)) continue; seen.set(key, true);
+    const side = pl.side;
+    const rk = put(new THREE.Group(), pl.rack.x, 0.06, pl.rack.z, group);
+    rk.rotation.y = pl.mode === 'x' ? (pl.dir < 0 ? Math.PI / 2 : -Math.PI / 2) : side > 0 ? Math.PI : 0;
+    for (const [px, pz] of [[-0.7, -0.24], [0.7, -0.24], [-0.7, 0.24], [0.7, 0.24]]) put(box(0.06, 1.75, 0.06, MAT.accent), px, 0.88, pz, rk);
+    const bins = [];
+    [0.32, 0.92, 1.52].forEach((y) => {
+      put(box(1.46, 0.04, 0.52, MAT.steel), 0, y, 0, rk);
+      [0x2f6fd6, 0x3ddc84, 0xf5b82e, 0xd23b3b].forEach((c, k) => bins.push(put(box(0.3, 0.2, 0.36, std(c)), -0.51 + k * 0.34, y + 0.12, 0.02, rk)));
+    });
+    racks.push({ side, group: rk, bins });
+  }
+  // 피지컬AI VLA: 로봇마다 바로 옆(진행 방향 바깥쪽 1m)에 2단 부품 선반, 손목 카메라, 집어 든 부품
+  if (vla) robots.forEach((r) => {
+    if (!r.slot) return;
+    const dir = r.slot.x > 0 ? 1 : -1, sx = r.slot.x + dir * 1.0, sz = r.slot.z;
+    const sh = put(new THREE.Group(), sx, 0.06, sz, group);
+    for (const [px, pz] of [[-0.22, -0.27], [0.22, -0.27], [-0.22, 0.27], [0.22, 0.27]]) put(box(0.04, 0.98, 0.04, MAT.accent), px, 0.49, pz, sh);
+    const bins = [];
+    [0.48, 0.92].forEach((y) => {
+      put(box(0.5, 0.03, 0.6, MAT.steel), 0, y, 0, sh);
+      [0x2f6fd6, 0x3ddc84, 0xf5b82e, 0xd23b3b].forEach((c, k) => bins.push(put(box(0.2, 0.12, 0.24, std(c)), -0.11 + (k % 2) * 0.22, y + 0.075, -0.13 + Math.floor(k / 2) * 0.26, sh)));
+    });
+    const flange = r.tip.parent;
+    const cam = r.wristCameraAnchor ?? put(box(0.07, 0.05, 0.06, MAT.dark), 0.07, 0.02, 0, flange);
+    const lens = emis(0x37e8ff, 1.5); put(cyl(0.018, 0.018, 0.02, lens, 10), 0, 0.035, 0, cam);   // 손목 카메라 렌즈 (도구 방향)
+    const names = cellParts(st);
+    fillBins(bins, names);
+    let held, heldParts = null;
+    if (names) {   // 그리퍼에 실제 부품 (사이클마다 빈 순서대로 바꿔 집음)
+      held = put(new THREE.Group(), 0, 0.02, 0, r.tip); held.visible = false;
+      heldParts = names.map((n) => { const o = partClone(n); o.scale.setScalar(1.3); held.add(o); return o; });
+    } else { held = put(box(0.12, 0.08, 0.12, std(0x3ddc84)), 0, 0.06, 0, r.tip); held.visible = false; }
+    r.vla = { shelf: { x: sx, y: 0.06 + 0.92 + 0.15, z: sz }, bins, held, heldParts, pick: 0, lens, dir };
+    racks.push({ side: r.slot.side, group: sh, bins, vla: true });
+  });
+  return { group, robots, racks };
+}
+
+// ── 공정 설비 (유형별) ─────────────────
+function buildWeld(g) {
+  const fence = new THREE.Group();
+  // 양 끝 펜스는 가운데 AMR 통로(|z| < 0.75)를 비운다 — 막혀 있으면 AMR·실은 패널이 펜스를 뚫고 지나간다
+  for (const x of [-2, 2]) for (const s of [-1, 1]) put(box(0.06, 1.3, 1.05, MAT.yellow), x, 0.8, s * 1.275, fence);
+  put(box(4, 0.06, 0.06, MAT.yellow), 0, 1.4, -1.8, fence);
+  g.add(fence);
+  const table = put(box(1.2, 0.8, 0.8, MAT.dark), -1.2, 0.55, 2.0, g);
+  return { manualProps: [table], sparks: put(makeSparks(0xffc060, 50, 0.07), 0, 0, 0, g) };
+}
+
+function buildAssembly(g, st, sim) {
+  const colors = [0x2f6fd6, 0x3ddc84, 0xf5b82e, 0xd23b3b];
+  if (!sim?.zone) {
+    put(box(4.0, 0.08, 0.5, MAT.steel), 0, BELT_Y + 0.2, -0.85, g);
+    colors.forEach((c, i) => put(box(0.5, 0.3, 0.4, std(c)), -1.5 + i * 0.6, BELT_Y + 0.4, -0.85, g));
+    const bowl = put(cyl(0.45, 0.3, 0.4, MAT.steel), 1.6, BELT_Y + 0.3, -0.9, g);
+    put(cyl(0.2, 0.2, 0.9, MAT.dark), 0, -0.6, 0, bowl);
+    return { bowl };
+  }
+  // 정밀조립Zone: 양쪽 로봇 바깥 끝에 부품 랙(2단 빈), 오른쪽 끝에 볼 피더 (피지컬AI VLA 셀은 로봇별 부품 선반으로 대체)
+  const feeders = [], names = cellParts(st);
+  for (const z of [-1.0, 1.0]) {
+    const r = put(new THREE.Group(), -1.95, 0.06, z, g); feeders.push(r);
+    put(box(0.55, 1.0, 0.6, MAT.steel), 0, 0.5, 0, r);
+    fillBins(colors.map((c, i) => put(box(0.24, 0.16, 0.26, std(c)), -0.13 + (i % 2) * 0.26, 0.6 + Math.floor(i / 2) * 0.3, 0, r)), names);
+  }
+  const bowl = put(cyl(0.3, 0.2, 0.3, MAT.steel), 1.95, 1.05, -1.0, g); feeders.push(bowl);
+  if (names) { const pile = partPile(st.def.product === 'eaxle' ? 'P_Seal' : 'P_Clip', 0.4, 0.4, 3); pile.position.y = 0.15; bowl.add(pile); }   // 볼 피더의 작은 부품
+  put(cyl(0.12, 0.12, 0.95, MAT.dark), 0, -0.55, 0, bowl);
+  // 제품 전용 라인 표시판 — 셀 출구 모서리(x 2.25, z 0.8) 바닥 기둥 위 2.3m: 피지컬AI VLA 셀에서는 x 1.95 · z 1.4에 부품 선반이 오므로 선반으로 뻗는 협동로봇 팔이 지나는 자리를 비키고, 팔보다 높게 둔다
+  const sign = put(box(0.5, 0.35, 0.05, std(ZONE_COLOR[st.def.product] ?? 0x888888, { emissive: ZONE_COLOR[st.def.product] ?? 0, emissiveIntensity: 0.5 })), 2.25, 2.3, 0.8, g);
+  put(box(0.05, 2.125, 0.05, MAT.dark), 0, -1.2375, 0, sign);
+  return { bowl, feeders };
+}
+
+// 부품분류셀: 비전 카메라 브리지 + 부품 공급 트레이 + 분류 빈
+function buildSort(g, st, sim) {
+  // 분류 게이트를 셀 입구(x −1.75)에 두고, 분류 로봇은 그 뒤에서 게이트 결정대로 작업한다
+  const gate = buildGate(g, -1.75, 0x33ff99);
+  if (sim?.zone) {
+    // 제품별 키트 빈: 도어트림 쪽(+z) · e-axle 쪽(−z), 게이트 뒤 출구 쪽
+    [['doortrim', 1.15], ['eaxle', -1.15]].forEach(([k, z]) => {
+      const tones = k === 'doortrim' ? [0xf0a030, 0xf5b82e, 0xd98a2b] : [0x9a6bff, 0x7b5cd6, 0x2f6fd6];
+      tones.forEach((c, i) => { const bin = put(box(0.42, 0.34, 0.4, std(c)), 0.45 + i * 0.47, 0.32, z, g); put(box(0.36, 0.02, 0.34, MAT.dark), 0, 0.17, 0, bin); });
+      const tag = put(box(0.5, 0.22, 0.04, std(ZONE_COLOR[k], { emissive: ZONE_COLOR[k], emissiveIntensity: 0.6 })), 1.85, 0.75, z, g);
+      put(box(0.04, 0.5, 0.04, MAT.dark), 0, -0.35, 0, tag);
+    });
+  } else {
+    [0x2f6fd6, 0x3ddc84, 0xf5b82e, 0xd23b3b].forEach((c, i) => {
+      const bin = put(box(0.42, 0.34, 0.4, std(c)), 0.2 + i * 0.47, 0.32, 1.15, g);
+      put(box(0.36, 0.02, 0.34, MAT.dark), 0, 0.17, 0, bin);
+    });
+    put(box(1.4, BELT_Y + 0.09, 0.6, MAT.dark), 1.0, (BELT_Y + 0.09) / 2, -1.0, g);
+  }
+  return { ...gate };
+}
+
+// 분류·포장 게이트: 문형 프레임 + 비전 카메라·스캔 링·스캔 막 + 결정 표시판 (셀 입구에 두고 들어오는 대상물을 판별)
+function buildGate(g, x, scanColor) {
+  for (const z of [-1.0, 1.0]) put(box(0.14, 2.3, 0.14, MAT.dark), x, 1.3, z, g);
+  put(box(0.22, 0.2, 2.2, MAT.dark), x, 2.45, 0, g);
+  put(box(0.3, 0.26, 0.36, MAT.white), x, 2.2, 0, g);
+  const ringMat = emis(0xffffff, 0.4);
+  const ring = put(mesh(new THREE.TorusGeometry(0.3, 0.035, 8, 28), ringMat, false), x, 1.9, 0, g);
+  ring.rotation.x = Math.PI / 2;
+  const scanMat = new THREE.MeshBasicMaterial({ color: scanColor, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const scan = put(new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.8), scanMat), x, 1.35, 0, g);
+  scan.rotation.y = Math.PI / 2;
+  // 결정 표시판 (게이트 위, 앞뒤)
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const signMat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
+  for (const ry of [Math.PI / 2, -Math.PI / 2]) {   // 앞뒤 두 장 — 어느 쪽에서 봐도 글자가 바로 보이게
+    const sign = put(new THREE.Mesh(new THREE.PlaneGeometry(2.2, 0.55), signMat), x + (ry > 0 ? 0.012 : -0.012), 2.95, 0, g);
+    sign.rotation.y = ry;
+  }
+  put(box(0.06, 0.4, 0.06, MAT.dark), x, 2.65, 0, g);
+  return { ringMat, scan, gateX: x, gateSign: { cv, tex, id: null } };
+}
+function drawGateSign(gs, st) {
+  const d = st.gate, key = d ? `${d.id}:${st.state === 'DOWN'}` : 'none';
+  if (gs.id === key) return; gs.id = key;
+  const c = gs.cv.getContext('2d'), col = d?.product ? '#' + ZONE_COLOR[d.product].toString(16).padStart(6, '0') : '#37e8ff';
+  c.fillStyle = '#071019'; c.fillRect(0, 0, 512, 128);
+  c.fillStyle = col; c.fillRect(0, 0, 14, 128);
+  c.font = 'bold 30px "Apple SD Gothic Neo", "Noto Sans KR", sans-serif'; c.fillStyle = '#9fb4c8';
+  c.fillText(st.def.type === 'pack' ? '포장 게이트 · 판별 결과' : '분류 게이트 · 판별 결과', 32, 42);
+  c.font = 'bold 40px "Apple SD Gothic Neo", "Noto Sans KR", sans-serif'; c.fillStyle = d?.product ? col : '#e6edf3';
+  const t = d ? d.text : '대기 중'; let fs = 40;
+  while (c.measureText(t).width > 460 && fs > 22) { fs -= 2; c.font = `bold ${fs}px "Apple SD Gothic Neo", "Noto Sans KR", sans-serif`; }
+  c.fillText(t, 32, 98);
+  gs.tex.needsUpdate = true;
+}
+
+// 부품압입셀: 양쪽 협동로봇이 힘제어로 압입 — 클립 피더 + 압입 툴 거치대 + 하중-변위 모니터
+function buildPressFit(g) {
+  const product = makeProductMachine('ep347', g, [1.55, 0, -.7]); if (product) return product;
+  for (const z of [-1.0, 1.0]) {
+    const f = put(box(0.5, 0.75, 0.42, MAT.white), -1.95, 0.42, z, g);
+    put(cyl(0.18, 0.12, 0.2, MAT.steel), 0, 0.47, 0, f);
+  }
+  const stand = put(box(0.4, 0.9, 0.4, MAT.dark), 1.95, 0.5, -1.05, g);
+  const ram = put(new THREE.Group(), 0, 0.55, 0, stand);
+  put(cyl(0.07, 0.07, 0.3, MAT.accent), 0, 0, 0, ram);
+  const panel = put(box(0.7, 0.55, 0.08, MAT.dark), 1.95, 1.75, 1.05, g);
+  const screen = emis(0x58c4ff, 1.2);
+  put(box(0.6, 0.45, 0.02, screen, false), 0, 0, 0.05, panel);
+  put(box(0.06, 1.1, 0.06, MAT.dark), 1.95, 0.95, 1.05, g);
+  return { ram, screen };
+}
+
+// 스크류체결셀: 오버헤드 너트러너 + 스크류 피더 + 토크 컨트롤러
+function buildScrew(g, st) {
+  // 너트러너 문형은 대상물(셀 중앙) 바로 위 — 기둥은 양쪽 로봇 팔 작업 범위(x<-0.3) 밖
+  for (const z of [-1.1, 1.1]) put(box(0.12, 2.6, 0.12, MAT.steel), 0.15, 1.45, z, g);
+  put(box(0.2, 0.2, 2.4, MAT.steel), 0.15, 2.75, 0, g);
+  put(box(0.24, 0.34, 0.24, MAT.dark), 0.15, 2.75, 0, g);                 // Z축 가이드 블록 (빔에 고정)
+  const head = put(new THREE.Group(), 0.15, 2.3, 0, g);
+  put(box(0.3, 0.35, 0.3, MAT.accent), 0, 0.1, 0, head);
+  put(box(0.08, 1.25, 0.08, MAT.steel), 0, 0.8, 0, head);                // Z축 봉 — 가장 낮게(1.95m) 내려와도 윗끝(3.3m)이 빔·가이드 블록 안에 남는다
+  const bit = put(cyl(0.035, 0.05, 0.55, MAT.steel, 10), 0, -0.3, 0, head);
+  const feeders = [];
+  for (const z of [-1.0, 1.0]) {
+    const f = put(box(0.45, 0.5, 0.4, MAT.white), -1.95, 0.45, z, g); feeders.push(f);
+    put(cyl(0.16, 0.1, 0.18, MAT.steel), 0, 0.34, 0, f);
+    if (cellParts(st)) { const pile = partPile(z < 0 ? 'P_Screw' : 'P_Clip', 0.24, 0.24, z < 0 ? 1 : 2); pile.position.y = 0.43; f.add(pile); }   // 스크류 피더: 나사 · 트림 클립
+  }
+  const ctl = put(box(0.5, 0.7, 0.35, MAT.dark), 1.95, 0.4, 1.6, g);
+  const screen = emis(0x3ddc84, 1.2);
+  put(box(0.36, 0.25, 0.02, screen, false), 0, 0.15, 0.18, ctl);
+  return { head, bit, screen, feeders };
+}
+
+// 부품체결셀(e-axle): 다축 너트러너 포털 + 토크 모니터
+function buildFasten(g, st) {
+  for (const z of [-1.3, 1.3]) put(box(0.18, 3.0, 0.18, MAT.dark), 0.2, 1.6, z, g);
+  put(box(0.3, 0.3, 2.8, MAT.dark), 0.2, 3.1, 0, g);
+  put(cyl(0.18, 0.18, 0.42, MAT.dark, 20), 0.2, 3.1, 0, g);              // 승강축 가이드 슬리브 (빔에 고정)
+  const head = put(new THREE.Group(), 0.2, 2.4, 0, g);
+  put(cyl(0.12, 0.12, 1.45, MAT.steel), 0, 0.72, 0, head);               // 승강축 — 가장 낮게(1.95m) 내려와도 윗끝(3.4m)이 빔·슬리브 안에 남는다
+  const disc = put(cyl(0.45, 0.45, 0.22, MAT.accent, 24), 0, 0, 0, head);
+  const spindles = [];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    spindles.push(put(cyl(0.04, 0.05, 0.4, MAT.steel, 8), Math.cos(a) * 0.32, -0.28, Math.sin(a) * 0.32, head));
+  }
+  const panel = put(box(0.8, 0.6, 0.08, MAT.dark), 1.8, 1.8, 1.35, g);
+  const screen = emis(0x3ddc84, 1.2);
+  put(box(0.7, 0.5, 0.02, screen, false), 0, 0, 0.05, panel);
+  put(box(0.06, 1.15, 0.06, MAT.dark), 1.8, 0.95, 1.35, g);
+  const names = cellParts(st);
+  if (names) {   // 체결 부품 트레이 (볼트 · 너트 · 와셔): 너트러너 옆 작업대
+    const tb = put(new THREE.Group(), 1.8, 0, -1.35, g);
+    put(box(0.06, 0.9, 0.06, MAT.dark), 0, 0.45, 0, tb);
+    put(box(0.7, 0.04, 0.4, MAT.steel), 0, 0.92, 0, tb);
+    fillBins(['P_Bolt', 'P_Nut', 'P_Washer'].map((_, i) => put(box(0.2, 0.05, 0.3, std(0x2f6fd6)), -0.22 + i * 0.22, 0.965, 0, tb)), ['P_Bolt', 'P_Nut', 'P_Washer']);
+  }
+  return { head, disc, spindles, screen };
+}
+
+function buildPress(g) {
+  const product = makeProductMachine('nc1', g); if (product) return product;
+  put(box(3.2, 0.5, 2.6, MAT.dark), 0, 0.4, 0, g);
+  put(box(1.0, 3.6, 1.0, MAT.accent), 0, 2.0, -1.3, g);
+  put(box(2.4, 0.8, 2.0, MAT.accent), 0, 3.6, -0.4, g);
+  const ram = put(new THREE.Group(), 0, 2.8, 0, g);
+  put(box(1.4, 0.6, 1.2, MAT.steel), 0, 0, 0, ram);
+  put(box(1.2, 0.08, 1.0, MAT.dark), 0, -0.34, 0, ram);
+  for (const x of [-1.5, 1.5]) put(box(0.1, 1.2, 1.6, MAT.yellow), x, 1.4, 1.2, g);
+  return { ram };
+}
+
+function buildLaser(g) {
+  put(box(4.0, 0.5, 2.6, MAT.white), 0, 0.4, 0, g);
+  for (const [x, z] of [[-1.9, -1.2], [1.9, -1.2], [-1.9, 1.2], [1.9, 1.2]]) put(box(0.1, 2.0, 0.1, MAT.dark), x, 1.6, z, g);
+  put(box(4.0, 0.1, 2.5, MAT.dark), 0, 2.6, 0, g);
+  put(box(3.9, 1.4, 0.04, std(0xff4a2a, { transparent: true, opacity: 0.25, depthWrite: false }), false), 0, 1.8, 1.22, g);
+  const head = put(new THREE.Group(), 0, 2.3, 0, g);
+  put(box(0.4, 0.4, 0.4, MAT.dark), 0, 0, 0, head);
+  const beamMat = new THREE.MeshBasicMaterial({ color: 0xff3322, toneMapped: false });
+  const beam = put(new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.0, 6), beamMat), 0, -0.7, 0, head);
+  return { head, beam, sparks: put(makeSparks(0xff8a50, 30, 0.05), 0, 0, 0, g) };
+}
+
+function buildTest(g) {
+  put(box(3.6, 0.6, 2.4, MAT.dark), 0, 0.45, 0, g);
+  for (const z of [-0.9, 0.9]) put(box(0.12, 1.8, 0.12, MAT.steel), 0.8, 1.6, z, g);
+  put(box(0.2, 0.2, 2.0, MAT.steel), 0.8, 2.5, 0, g);
+  const probe = put(new THREE.Group(), 0.8, 2.1, 0, g);
+  put(box(0.5, 0.25, 0.7, MAT.accent), 0, 0, 0, probe);
+  for (const z of [-0.2, 0, 0.2]) put(cyl(0.02, 0.02, 0.35, MAT.copper), 0, -0.3, z, probe);
+  const scr = emis(0x3ddc84, 1.2);
+  const mon = put(box(0.9, 0.6, 0.06, MAT.dark), -1.2, 2.0, -1.0, g);
+  put(box(0.8, 0.5, 0.02, scr, false), 0, 0, 0.04, mon);
+  put(box(0.06, 1.2, 0.06, MAT.dark), -1.2, 1.2, -1.0, g);
+  return { probe, screen: scr };
+}
+
+function buildPaint(g) {
+  put(box(4.4, 0.12, 3.6, MAT.dark), 0, 2.95, 0, g);
+  for (const [x, z] of [[-2.15, -1.75], [2.15, -1.75], [-2.15, 1.75], [2.15, 1.75]]) put(box(0.12, 2.9, 0.12, MAT.steel), x, 1.45, z, g);
+  put(box(4.3, 2.0, 0.04, MAT.booth, false), 0, 1.9, 1.75, g);
+  put(box(4.3, 2.8, 0.04, MAT.booth, false), 0, 1.5, -1.75, g);
+  put(box(0.04, 1.6, 3.5, MAT.booth, false), -2.15, 2.1, 0, g);
+  put(box(0.04, 1.6, 3.5, MAT.booth, false), 2.15, 2.1, 0, g);
+  put(cyl(0.45, 0.45, 2.2, MAT.steel), 1.2, 4.0, -0.8, g);
+  const lamp = emis(0xe6f2ff, 0.8);
+  put(box(3.6, 0.04, 0.4, lamp, false), 0, 2.87, 0, g);
+  return { lamp, mist: put(makeSparks(0x4f8fff, 70, 0.12), 0, 0, 0, g) };
+}
+
+function buildVision(g) {
+  const auto = new THREE.Group(); g.add(auto);
+  for (const z of [-1.0, 1.0]) put(box(0.16, 2.3, 0.16, MAT.dark), 0, 1.3, z, auto);
+  put(box(0.24, 0.22, 2.3, MAT.dark), 0, 2.45, 0, auto);
+  put(box(0.35, 0.3, 0.45, MAT.white), 0, 2.2, 0, auto);
+  put(cyl(0.08, 0.1, 0.15, MAT.dark), 0, 2.0, 0, auto);
+  const ringMat = emis(0xffffff, 0.4);
+  const ring = put(mesh(new THREE.TorusGeometry(0.38, 0.04, 8, 32), ringMat, false), 0, 1.75, 0, auto);
+  ring.rotation.x = Math.PI / 2;
+  const scanMat = new THREE.MeshBasicMaterial({ color: 0x33ff99, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const scan = put(new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.8), scanMat), 0, 1.3, 0, auto);
+  scan.rotation.y = Math.PI / 2;
+  const bin = put(box(0.9, 0.7, 0.9, std(0xb33a3a)), 1.4, 0.5, -1.9, g);
+  put(box(0.8, 0.02, 0.8, MAT.dark), 0, 0.36, 0, bin);
+  const lampMat = emis(0xfff4d0, 1.0);
+  const manual = new THREE.Group(); g.add(manual);
+  put(box(0.06, 1.6, 0.06, MAT.dark), -0.6, 1.0, 1.0, manual);
+  put(box(0.8, 0.08, 0.3, lampMat, false), -0.3, 1.8, 0.7, manual);
+  return { auto, manual, ringMat, scan, bin };
+}
+
+function buildPack(g, st, sim) {
+  if (sim?.zone) {
+    // 공동 포장셀: 입구에 포장 게이트(제품 판별 → 트레이/크레이트 결정), 그 뒤에 포장 로봇, 출구에 테이핑·라벨러 문형
+    // 매거진은 출구 쪽 양 모서리(x +1.0, z ±1.65): 도어트림 트레이(+z) · e-axle 크레이트(−z) — 그 쪽 로봇이 그 포장을 맡는다
+    const gate = buildGate(g, -1.75, 0x58c4ff);
+    [['doortrim', 1.65], ['eaxle', -1.65]].forEach(([k, z]) => {
+      const mg = put(new THREE.Group(), 1.0, 0.06, z, g);
+      for (let i = 0; i < 6; i++) put(box(0.55, 0.1, 0.5, k === 'doortrim' ? MAT.carton : std(0x6d5a8a)), 0, 0.05 + i * 0.11, 0, mg);
+      put(box(0.56, 0.04, 0.51, std(ZONE_COLOR[k])), 0, 0.7, 0, mg);
+    });
+    for (const z of [-0.85, 0.85]) put(box(0.12, 1.9, 0.12, MAT.steel), 1.45, 1.0, z, g);
+    const head = put(box(0.6, 0.45, 1.8, MAT.white), 1.45, 2.0, 0, g);
+    put(box(0.62, 0.1, 1.82, MAT.accent), 0, -0.25, 0, head);
+    // 검사·포장셀: 최종 외관 검사·QR 라벨 판독 카메라 (라벨러 문형 아래 — 마킹·판독 순간 밝아짐, js/serial.js)
+    const markMat = emis(0x37e8ff, 0.35), rd = put(new THREE.Group(), -0.05, -0.36, 0.5, head); rd.name = 'CodeReader';
+    put(box(0.14, 0.12, 0.18, MAT.dark), 0, 0, 0, rd); put(new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.009, 6, 14), markMat), 0, -0.07, 0, rd).rotation.x = Math.PI / 2;
+    return { ...gate, markMat };
+  }
+  const mag = put(new THREE.Group(), 1.1, 0.15, -1.7, g);
+  for (let i = 0; i < 6; i++) put(box(1.0, 0.06, 0.8, MAT.carton), 0, 0.05 + i * 0.07, 0, mag);
+  const taper = put(box(0.6, 0.6, 1.3, MAT.white), 1.4, BELT_Y + 0.6, 0, g);
+  put(box(0.62, 0.1, 1.32, MAT.accent), 0, 0.3, 0, taper);
+  return {};
+}
+
+// ── 자재투입존 (정밀조립Zone · Blender): 한쪽(+z) 도어트림 빗살 거치대, 반대쪽(−z) e-axle 3단 랙에 실물 모델을 정렬 보관
+// 수십 개를 그리므로 모델을 재질별로 합쳐(bake) InstancedMesh로 그린다 — 보이는 개수(count)가 재고 수량
+function bakeAsset(root, skip) {
+  root.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(root.matrixWorld).invert(), byMat = new Map();
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    for (let a = o; a && a !== root; a = a.parent) if (!a.visible || skip?.(a)) return;
+    let gm = o.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld));
+    if (gm.index) gm = gm.toNonIndexed();
+    for (const k of Object.keys(gm.attributes)) if (k !== 'position' && k !== 'normal') gm.deleteAttribute(k);
+    const e = byMat.get(o.material.uuid) ?? byMat.set(o.material.uuid, { material: o.material, gs: [] }).get(o.material.uuid);
+    e.gs.push(gm);
+  });
+  return [...byMat.values()].map(({ material, gs }) => ({ material, geometry: mergeGeometries(gs) }));
+}
+const BAKED = new Map();   // 자산별 재질 합친 지오메트리 (자산을 다시 불러오면 새로 만든다)
+function bakedOf(name, skip) {
+  const src = RENDER.assets[name]; if (!src) return null;
+  const hit = BAKED.get(name); if (hit?.src === src) return hit.baked;
+  const baked = bakeAsset(src.clone(true), skip); BAKED.set(name, { src, baked }); return baked;
+}
+function instancedStock(baked, mats) {
+  const group = new THREE.Group();
+  const meshes = baked.map(({ material, geometry }) => {
+    const m = new THREE.InstancedMesh(geometry, material, mats.length);
+    mats.forEach((mx, i) => m.setMatrixAt(i, mx));
+    m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; group.add(m); return m;
+  });
+  return { group, setCount: (n) => meshes.forEach((m) => { m.count = Math.max(0, Math.min(mats.length, n)); }) };
+}
+function buildSourceZone(g) {
+  const SLOTS = RAW_CAP / 2, auto = new THREE.Group(); g.add(auto);
+  // 투입 갠트리 프레임: 양쪽 보관 구역(z −3 ~ +3)을 모두 덮는다
+  for (const x of [-1.95, 1.95]) for (const z of [-3.15, 3.15]) put(box(0.12, 3.0, 0.12, MAT.yellow), x, 1.5, z, auto);
+  for (const z of [-3.15, 3.15]) { put(box(4.1, 0.14, 0.14, MAT.yellow), 0, 3.0, z, auto); put(box(3.9, 0.03, 0.05, MAT.steel), 0, 3.09, z, auto); }
+  const bridge = put(new THREE.Group(), 0, 3.0, 0, auto);
+  put(box(0.18, 0.18, 6.5, MAT.dark), 0, 0.12, 0, bridge);
+  for (const z of [-3.15, 3.15]) put(box(0.3, 0.14, 0.26, MAT.orange), 0, 0.14, z, bridge);
+  const car = put(new THREE.Group(), 0, 0, 0, bridge);
+  put(box(0.4, 0.3, 0.4, MAT.orange), 0, -0.05, 0, car);
+  put(box(0.18, 0.7, 0.18, MAT.dark), 0, 0.3, 0, car);                                    // Z축 가이드 슬리브 (캐리지 위아래)
+  const lift = put(new THREE.Group(), 0, 0, 0, car);
+  put(box(0.08, 2.7, 0.08, MAT.steel), 0, -0.25, 0, lift);   // Z축 봉 (−1.6 ~ +1.1): 가장 낮게 내려가도 캐리지 슬리브에 물려 있다
+  put(box(0.5, 0.08, 0.4, MAT.dark), 0, -1.6, 0, lift);
+  // e-axle 적재 (−z): 바닥 팔레트 위에 받침대째 3열(x) × 3줄(z)로 놓고, 층 사이에 받침목을 깔아 3단으로 쌓는다 (선반 없음 — 갠트리가 위에서 집는다)
+  const EA_H = 0.57, LV = [0.12, 0.72, 1.32];
+  put(box(3.6, 0.12, 1.6, MAT.pallet), 0, 0.06, -2.15, g);
+  const boards = LV.slice(1).map((y) => { const b = put(new THREE.Group(), 0, 0, 0, g); for (const z of [-0.52, 0, 0.52]) put(box(3.5, 0.03, 0.12, MAT.pallet), 0, y - 0.015, -2.15 + z, b); return b; });
+  const eaSlots = [];
+  LV.forEach((y) => { for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) eaSlots.push(new THREE.Vector3(-1.15 + c * 1.15, y, -2.15 - 0.52 + r * 0.52)); });
+  const eaM = eaSlots.slice(0, SLOTS).map((v) => new THREE.Matrix4().makeTranslation(v.x, v.y, v.z));
+  const ea = instancedStock(bakedOf('eaxle', (o) => o.name === 'FastenBolts'), eaM); g.add(ea.group);
+  // 도어트림 빗살 거치대 (+z): 2열(x) × 10장, 세워서 앞면이 바깥(+z)을 보게 — 안쪽부터 채운다
+  const dr = put(new THREE.Group(), 0, 0, 2.15, g);
+  put(box(3.7, 0.08, 1.6, MAT.steel), 0, 0.04, 0, dr);
+  for (const cx of [-0.95, 0.95]) {
+    for (const x of [-0.36, 0.36]) put(box(0.05, 0.06, 1.5, MAT.dark), cx + x, 0.11, 0, dr);
+    for (let k = 0; k <= 10; k++) for (const x of [-0.44, 0.44]) put(box(0.02, 0.5, 0.02, MAT.accent), cx + x, 0.33, -0.725 + k * 0.145, dr);   // 빗살 칸막이
+    for (const x of [-0.44, 0.44]) put(box(0.03, 0.03, 1.5, MAT.accent), cx + x, 0.6, 0, dr);
+  }
+  const dtSlots = [];
+  for (let k = 0; k < 10; k++) for (const cx of [-0.95, 0.95]) dtSlots.push(new THREE.Vector3(cx, 0.14, 2.15 - 0.65 + k * 0.145));
+  const dtM = dtSlots.map((v) => new THREE.Matrix4().makeTranslation(v.x, v.y, v.z));
+  const dt = instancedStock(bakedOf('doortrim'), dtM); g.add(dt.group);
+  // 갠트리가 들고 가는 모델 (제품별): 중심이 기존 박스 자리(−1.85)
+  const heldEA = put(new THREE.Group(), 0, -1.85 - EA_H / 2, 0, lift); const eh = cloneAsset('eaxle').root; eh.getObjectByName('FastenBolts').visible = false; heldEA.add(eh);
+  const heldDT = put(new THREE.Group(), 0, -1.85 - 0.3, 0, lift); heldDT.add(cloneAsset('doortrim').root);
+  const held = put(new THREE.Group(), 0, 0, 0, lift); held.add(heldEA, heldDT);
+  return { auto, bridge, car, lift, held, heldEA, heldDT, stack: [], zoneStock: { ea: { ...ea, slots: eaSlots.slice(0, SLOTS), h: EA_H, boards }, dt: { ...dt, slots: dtSlots, h: 0.6 } } };
+}
+
+function buildSource(g, st, sim) {
+  if (sim?.zone && blenderOn() && RENDER.assets.eaxle && RENDER.assets.doortrim) return buildSourceZone(g);
+  const auto = new THREE.Group(); g.add(auto);
+  for (const x of [-1.8, 1.8]) for (const z of [-1.5, 3.0]) put(box(0.12, 3.0, 0.12, MAT.yellow), x, 1.5, z, auto);
+  put(box(3.8, 0.14, 0.14, MAT.yellow), 0, 3.0, -1.5, auto);
+  put(box(3.8, 0.14, 0.14, MAT.yellow), 0, 3.0, 3.0, auto);
+  // 투입 갠트리 (직교 3축): X축 레일(z −1.5·3.0) 위를 브리지가 주행(X) → 캐리지가 브리지를 따라 이송(Y) → 승강축이 내려가 집기(Z)
+  for (const z of [-1.5, 3.0]) put(box(3.6, 0.03, 0.05, MAT.steel), 0, 3.09, z, auto);   // 리니어 가이드
+  const bridge = put(new THREE.Group(), 0, 3.0, 0, auto);
+  put(box(0.18, 0.18, 4.6, MAT.dark), 0, 0.12, 0.75, bridge);
+  for (const z of [-1.5, 3.0]) put(box(0.3, 0.14, 0.26, MAT.orange), 0, 0.14, z, bridge);   // 레일 주행 블록
+  const car = put(new THREE.Group(), 0, 0, 0, bridge);
+  put(box(0.4, 0.3, 0.4, MAT.orange), 0, -0.05, 0, car);
+  put(box(0.18, 0.7, 0.18, MAT.dark), 0, 0.3, 0, car);                                    // Z축 가이드 슬리브
+  const lift = put(new THREE.Group(), 0, 0, 0, car);                                       // Z축 승강
+  put(box(0.08, 2.7, 0.08, MAT.steel), 0, -0.25, 0, lift);                                 // 봉이 길어 가장 낮게 내려가도 캐리지에 물려 있다
+  put(box(0.5, 0.08, 0.4, MAT.dark), 0, -1.6, 0, lift);
+  const held = put(box(0.6, 0.35, 0.5, MAT.raw), 0, -1.85, 0, lift);
+  put(box(2.6, 0.12, 2.0, MAT.pallet), 0, 0.21, 2.3, g);
+  const stack = [];
+  for (let i = 0; i < RAW_CAP; i++) {
+    const lx = i % 4, lz = Math.floor(i / 4) % 5, ly = Math.floor(i / 20);
+    stack.push(put(box(0.55, 0.32, 0.36, MAT.raw), -0.9 + lx * 0.6, 0.45 + ly * 0.34, 1.5 + lz * 0.4, g));
+  }
+  return { auto, bridge, car, lift, held, stack };
+}
+
+function buildSink(g, st, sim) {
+  if (sim?.zone) {
+    // 구분 적재장: 앞쪽(+z) 도어트림 구역, 뒤쪽(-z) e-axle 구역 — 로봇이 제품을 구분해 적재
+    // 제품마다 적재 로봇 1대: AMR 하역 위치(셀 중앙)와 제품 구역 사이(z ±1.25)에서 AMR 위 박스를 집어 적재 팔레트에 쌓는다
+    // 적재: 4열 × 2줄 × 3단 (팔레트 3.0 × 1.6m, 줄 z ±2.3 · ±3.0) — 로봇(IRB 4600-60/2.05, 도달 2.05m)이 모든 칸에 닿는다 (4열 × 3줄이면 먼 줄 모서리가 2.67m)
+    // 쌓는 순서: 먼 줄부터(그 줄을 3단까지) → 로봇 쪽 줄, 줄 안에서는 바깥 열부터 — 이미 쌓은 상자 위로 팔이 지나가지 않는다
+    const stacks = {}, arms = {}, auto = put(new THREE.Group(), 0, 0, 0, g);
+    const SLOTS = [3.0, 2.3].flatMap((z) => [0, 1, 2].flatMap((ly) => [1.05, -1.05, 0.35, -0.35].map((x) => ({ x, ly, z }))));
+    [['doortrim', 1], ['eaxle', -1]].forEach(([k, sd]) => {
+      const pad = put(new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.0), new THREE.MeshStandardMaterial({ color: ZONE_COLOR[k], transparent: true, opacity: 0.35, depthWrite: false })), 0, 0.02, sd * 2.65, g);
+      pad.rotation.x = -Math.PI / 2;
+      put(box(3.0, 0.12, 1.6, MAT.pallet), 0, 0.12, sd * 2.65, g);
+      const mat = k === 'doortrim' ? MAT.carton : MAT.crate;
+      stacks[k] = SLOTS.slice(0, FG_ZONE_CAP).map((q) => put(box(0.66, 0.5, 0.66, mat), q.x, 0.43 + q.ly * 0.52, sd * q.z, g));
+      const arm = makeArm(k === 'doortrim' ? MAT.orange : std(0x7a5cc8, { roughness: 0.45, metalness: 0.3 }), PALLET_ARM.s, 'articulated');
+      put(arm.root, 0, 0.06, sd * PALLET_ARM.z, auto);
+      put(cyl(0.62, 0.66, 0.06, std(ZONE_COLOR[k], { roughness: 0.5 })), 0, 0.03, sd * PALLET_ARM.z, auto);   // 제품 색 받침
+      const held = put(box(0.66, 0.5, 0.66, mat), 0, (arm.native ? 1 : -1) * (0.25 + 0.02), 0, arm.tip); held.visible = false;       // 진공 그리퍼에 붙은 박스 (Blender 실물 로봇은 TCP +y가 툴 방향 — 툴을 세워 집으면 박스가 그리퍼 아래에 매달린다)
+      arms[k] = { arm, sd, held, queue: 0, cyc: null, seen: null };
+    });
+    return { zoneStacks: stacks, arms, auto };
+  }
+  put(box(3.0, 0.12, 2.4, MAT.pallet), 0, 0.21, 2.2, g);
+  const stack = [];
+  for (let i = 0; i < FG_CAP; i++) {
+    const lx = i % 4, lz = Math.floor(i / 4) % 3, ly = Math.floor(i / 12);
+    stack.push(put(box(0.66, 0.5, 0.66, MAT.carton), -1.05 + lx * 0.7, 0.52 + ly * 0.52, 1.5 + lz * 0.7, g));
+  }
+  const arm = makeArm(MAT.orange, 0.9, 'articulated'); put(arm.root, 1.7, 0.15, 0.9, g);
+  return { stack, arm, auto: arm.root };
+}
+
+const BUILDERS = {
+  cnc: buildCNC, press: buildPress, laser: buildLaser, weld: buildWeld, assembly: buildAssembly,
+  paint: buildPaint, vision: buildVision, test: buildTest, pack: buildPack, source: buildSource, sink: buildSink,
+  sort: buildSort, pressfit: buildPressFit, screw: buildScrew, fasten: buildFasten,
+};
+
+// ── 메인 뷰 ─────────────────────────────
+export class FactoryView {
+  constructor(scene) {
+    this.scene = scene;
+    this.root = new THREE.Group(); scene.add(this.root);
+    this.dyn = new THREE.Group(); scene.add(this.dyn);
+    this.time = 0;
+    this.itemMeshes = new Map(); this.itemPool = [];
+    this.flyers = [];
+    this.packets = [];
+    this.stationViews = [];
+    this.conveyorTex = [];
+    this.lampMats = [];
+    this.iot = new THREE.Group(); this.root.add(this.iot);
+    this.buildBuilding();
+    this.buildAreas();
+  }
+
+  buildBuilding() {
+    const r = this.root;
+    const floorMat = new THREE.MeshStandardMaterial({ map: floorTexture(), roughness: 0.85, metalness: 0.05 });
+    // 바닥: 생산동(x −38 ~ 38) + 왼쪽 물류 확장동(x −51 ~ −38) — 하나의 건물, 사이 벽 없음
+    // 앞뒤(z −43 ~ 42): 서버실 · 유연생산Zone · 정밀조립Zone · 적응가공Zone · AMR 스테이션 (zonedefs.js)
+    // 직사각형 건물: x −51(왼쪽 벽 · 정밀조립 화면) ~ 48 · z −43(뒷벽) ~ 42(앞쪽 열린 면)
+    const BD = BUILDING.z1 - BUILDING.z0, BC = (BUILDING.z0 + BUILDING.z1) / 2, BW = BUILDING.x1 - BUILDING.x0, BX = (BUILDING.x0 + BUILDING.x1) / 2;
+    floorMat.map.repeat.set(BW / 4, BD / 4);   // 텍스처 한 장 = 4m (격자 4칸)
+    const floor = put(mesh(new THREE.PlaneGeometry(BW, BD), floorMat, false), BX, 0, BC, r);
+    floor.rotation.x = -Math.PI / 2;
+    this.floorMat = floorMat;
+    // AGV 통로
+    const laneGeo = (w, d) => new THREE.PlaneGeometry(w, d);
+    // 앞쪽 통로(z 9)는 확장동 AGV 충전 패드 앞까지, 앞쪽 시설 통로(z 31)는 확장동 물류존(AGV 원자재 상차·부품 피킹) 앞까지 이어지고, 왼쪽 세로 통로는 동선 계산의 교차 통로(x −35.5)와 같은 자리
+    // 정밀조립Zone 앞뒤 통로(z ±9) · 확장 Zone 바깥 시설 통로(앞 FF · 뒤 BB) · 좌우 끝 세로 통로(시설 ↔ 정밀조립Zone 연결)
+const VZ = (bk(-9) + fr(9)) / 2, VL = fr(9) - bk(-9) + 2.6;
+    // 앞뒤 통로는 넓힌 오른쪽(x 48 벽 앞)까지 이어 그린다 — 단 가운데 통로(z −9)는 오른쪽 세로 통로(x 30)까지만: 그 오른쪽은 정밀검사존 (inspzone.js) · 출하 지게차는 뒤쪽 통로(z −32)로 도크에 간다
+    const LX1 = BUILDING.x1 - 1.3, lane = (x0, z) => [(x0 + LX1) / 2, z, LX1 - x0, 2.6];
+    const lanes = [lane(-49, 9), [(-37 + 31.3) / 2, -9, 31.3 + 37, 2.6], lane(-45.2, fr(9)), lane(-42, bk(-9)), [-35.5, VZ, 2.6, VL], [30, VZ, 2.6, VL], [(-39.6 - 36.8) / 2, AISLE.T, 2.8, 2.6]];   // 마지막: 정비실 앞 짧은 통로 (정비실 출입구 → 왼쪽 세로 통로)   // 입고 지게차 운행 구간은 바닥 초록 전용 표시로만 구분
+    for (const [x, z, w, d] of lanes) {
+      const l = put(new THREE.Mesh(laneGeo(w, d), MAT.lane), x, 0.005, z, r); l.rotation.x = -Math.PI / 2; l.receiveShadow = true;
+      for (const s of [-1, 1]) {
+        const horiz = w > d;
+        const ln = put(new THREE.Mesh(laneGeo(horiz ? w : 0.1, horiz ? 0.1 : d), MAT.laneLine), x + (horiz ? 0 : s * (w / 2)), 0.01, z + (horiz ? s * (d / 2) : 0), r);
+        ln.rotation.x = -Math.PI / 2;
+      }
+    }
+    // 벽체·기둥
+    // 뒷벽: 출하 도크 문 2개(폭 4.6m · 높이 4.9m)만 트럭 상차용으로 열고 나머지는 외벽 (입고 도크와 같은 방식)
+    // 뒷벽(z −43): 건물 전체 폭으로 곧게 (정밀조립 관제 화면·CCTV 전광판·로봇 디스플레이는 왼쪽 벽 안쪽 — zonedefs.js LEFT_WALL)
+    put(box(BW + 0.3, 8, 0.3, MAT.wall), BX, 4, BUILDING.z0, r);
+    // 왼쪽 벽(확장동 x −51): 맨 아래 입고 도크 문(z 33.5~38.1, 높이 4.9m)만 트럭 하차용으로 열고 나머지는 외벽
+    // 왼쪽 벽은 그림자를 드리우지 않는다 (해가 왼쪽에서 비쳐 물류 확장동 바닥을 크게 덮던 그림자 제거 — 바닥은 다른 그림자를 그대로 받음)
+    { const dz0 = INBOUND.dockZ - 2.3, dz1 = INBOUND.dockZ + 2.3;
+      const W = INBOUND.wallX, lw = put(new THREE.Group(), 0, 0, 0, r);
+      put(box(0.3, 8, dz0 - BUILDING.z0, MAT.wall), W, 4, (BUILDING.z0 + dz0) / 2, lw);
+      put(box(0.3, 8, BUILDING.z1 - dz1, MAT.wall), W, 4, (dz1 + BUILDING.z1) / 2, lw);
+      put(box(0.3, 8 - 4.9, 4.6, MAT.wall), W, 4.9 + (8 - 4.9) / 2, INBOUND.dockZ, lw);
+      put(box(0.32, 0.05, 4.6, MAT.steel), W, 0.025, INBOUND.dockZ, lw);   // 강철 문턱은 도크 문 폭만 (나머지는 외벽 색 그대로) — 바닥과 거의 같은 높이: 지게차가 넘어 다닌다 (0.3m 턱이면 마스트·포크가 뚫고 지나간다)
+      // 입고 도크: 말아 올린 셔터·문틀·도크 레벨러·범퍼·표지
+      put(cyl(0.32, 0.32, 4.6, MAT.dark, 16), W + 0.15, 4.75, INBOUND.dockZ, lw).rotation.x = Math.PI / 2;
+      put(box(0.14, 0.25, 4.8, MAT.yellow), W + 0.25, 4.6, INBOUND.dockZ, lw);
+      for (const sd of [-1, 1]) put(box(0.2, 4.6, 0.18, MAT.yellow), W + 0.2, 2.3, INBOUND.dockZ + sd * 2.35, lw);
+      put(box(1.4, 0.08, 2.6, MAT.steel), W + 0.8, 0.04, INBOUND.dockZ, lw);
+      for (const sd of [-1, 1]) put(box(0.25, 0.5, 0.35, MAT.rubber), W - 0.3, 1.0, INBOUND.dockZ + sd * 1.15, lw);
+      put(makeSignPlate('입고 도크', '#3ddc84', 3.2), W, 5.6, INBOUND.dockZ, lw).rotation.y = -Math.PI / 2;   // 문 위 벽에 고정 — 앞면이 바깥(−x)
+      lw.traverse((o) => (o.castShadow = false)); }
+    // 오른쪽 벽: 위쪽(뒤) 모서리에 출하 도크 문 1개(폭 4.6m · 높이 4.9m)만 트럭 상차용으로 연다 — 야드 로컬 좌표를 shipToWorld로 돌려 둔다
+    { const doorW = 4.6, dz = YARD.bays.map((bx) => shipToWorld(bx, YARD.wallZ).z).sort((a, b) => a - b), W = SHIP.wallX;
+      const cuts = [BUILDING.z0, ...dz.flatMap((z) => [z - doorW / 2, z + doorW / 2]), BUILDING.z1];
+      for (let i = 0; i < cuts.length; i += 2) put(box(0.3, 8, cuts[i + 1] - cuts[i], MAT.wall), W, 4, (cuts[i] + cuts[i + 1]) / 2, r);
+      for (const z of dz) put(box(0.3, 8 - 4.9, doorW, MAT.wall), W, 4.9 + (8 - 4.9) / 2, z, r);
+      put(box(0.32, 0.05, dz[dz.length - 1] - dz[0] + doorW + 4, MAT.steel), W, 0.025, (dz[0] + dz[dz.length - 1]) / 2, r); }   // 문턱: 지게차가 넘어 다니는 낮은 강판
+    for (let x = -45; x <= BUILDING.x1 - 2; x += 9) put(box(0.6, 8, 0.6, MAT.steel), x, 4, BUILDING.z0 + 0.4, r);
+    put(box(BW, 0.5, 0.35, MAT.accent), BX, 7.7, BUILDING.z0 + 0.2, r);
+    // 천장 형광등 기구는 두지 않는다 — 공장 밝기는 환경광·주광·보조광(main.js LOOK)으로 단계별로 유지
+    // 과학기술정보통신부·정보통신산업진흥원 로고는 정밀조립 데이터 서버 랙 양옆(아래 관제/서버, 왼쪽 벽 앞)과 앞쪽 바닥 표시에 둔다
+    // 바닥 표시(18×8.1m) — 앞쪽 AGV 충전소(오른쪽 끝 x −2.8)와 정비실(왼쪽 끝 x 10.3) 사이 가운데 (x 3.75), 앞쪽 통로(지게차 z ≤ 10.7)와 AMR 복귀 전용로(z ≥ 18.3) 사이 가운데 (z 14.5)
+    // 두 줄로 각 기관 CI 가로형 시그니처(상징 + 로고타입, 상징은 공식 색) — 멀리서도 선명하게 로고타입은 진한 회색(#3a3a3a)으로 굵게. 바탕 판 없이 바닥색 위에 그린다 (투명 배경 이미지)
+    const logoTex = new THREE.TextureLoader().load('assets/msit_nipa_ci_v2.png');
+    logoTex.colorSpace = THREE.SRGBColorSpace; logoTex.anisotropy = 8;
+    // 1.5배 (18 × 8.1m) — 앞쪽 시설 통로(z 32) 남쪽 ~ 건물 앞면(z 42) 사이 가운데(z 37), 서쪽은 적응가공 정비실(x −9)과 띄운다
+    const sign = put(new THREE.Mesh(new THREE.PlaneGeometry(18, 18 * 720 / 1600), new THREE.MeshBasicMaterial({ map: logoTex, transparent: true, depthWrite: false, toneMapped: false })), 3.75, 0.012, fr(15), r);   // 톤 매핑으로 글자가 옅어지지 않게
+    sign.rotation.x = -Math.PI / 2;
+    // 출하 도크: 말아 올린 셔터·문틀·도크 레벨러·범퍼 — 야드 로컬 좌표(도크 벽 z −20)로 만들고 그룹째 오른쪽 벽으로 돌린다
+    const dk = put(new THREE.Group(), SHIP_FRAME.x, 0, SHIP_FRAME.z, r); dk.rotation.y = SHIP_FRAME.rot; this.shipFrame = dk;
+    for (const bx of YARD.bays) {
+      put(cyl(0.32, 0.32, 4.6, MAT.dark, 16), bx, 4.75, -19.85, dk).rotation.z = Math.PI / 2;
+      put(box(4.8, 0.25, 0.14, MAT.yellow), bx, 4.6, -19.75, dk);
+      for (const sd of [-1, 1]) put(box(0.18, 4.6, 0.2, MAT.yellow), bx + sd * 2.35, 2.3, -19.8, dk);
+      put(box(2.6, 0.08, 1.4, MAT.steel), bx, 0.04, -19.2, dk);
+      for (const sd of [-1, 1]) put(box(0.35, 0.5, 0.25, MAT.rubber), bx + sd * 1.15, 1.0, -20.3, dk);
+      put(makeSignPlate(shipBayName(bx), '#f2c230', 3.2), bx, 5.6, YARD.wallZ, dk).rotation.y = Math.PI;   // 문 위 벽에 고정 — 앞면이 바깥(야드 −z), 그룹째 오른쪽 벽으로 돈다
+    }
+    this.buildYard();
+    this.buildFacadeSigns();
+  }
+
+  // 물류 선반 재고 현황판 — 원자재·부품 재고 막대(재주문점 표시), 입고 순환 상태, 입고·출고 누적
+  drawWhBoard() {
+    const sim = this.sim, ib = sim.inbound, B = this.whBoard; if (!B || !ib) return;
+    const raw = sim.whRaw, parts = sim.partsTracked ? sim.whParts : null, d = ib.docked, moving = ib.trucks.find((t) => t.state !== 'dock' && t.state !== 'depart'), ord = ib.orders[0];
+    const status = d ? ['🚚 ' + d.id + ' 하차 중 · 남은 팔레트 ' + d.pallets.length, '#3ddc84'] : moving ? ['🚚 ' + moving.id + ' 입차 중 (' + ({ arrive: '진입', wait: '대기', toDock: '후진 접안' })[moving.state] + ')', '#37e8ff']
+      : ord ? [sim.supplyDisrupted ? '⛔ 발주됨 · 공급사 납품 지연 (공급 차질)' : `📝 발주됨 · ${Math.max(0, Math.ceil(ord.due - sim.time))}초 뒤 트럭 출발`, sim.supplyDisrupted ? '#ff8a1f' : '#f5b82e'] : ['✅ 재고 충분 · 배달로 줄어드는 중', '#8fb3c9'];
+    const key = [raw, parts, status[0], ib.stats.trucks, sim.stats.supplyTrips, sim.stats.refills].join('|');
+    if (key === B.key) return; B.key = key;
+    const c = B.cv.getContext('2d'), W = B.cv.width, H = B.cv.height, F = '"Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
+    c.fillStyle = '#04121f'; c.fillRect(0, 0, W, H);
+    c.fillStyle = '#e8eef4'; c.font = `800 46px ${F}`; c.textBaseline = 'middle'; c.fillText('📦 물류 선반 재고 · 입고 순환', 36, 46);
+    const bar = (y, label, v, cap, reorder, unit, col) => {
+      c.font = `700 36px ${F}`; c.fillStyle = '#c9d2dc'; c.fillText(label, 36, y);
+      const x0 = 210, w = 900, h = 40, f = Math.max(0, Math.min(1, v / cap));
+      c.fillStyle = '#16232f'; c.fillRect(x0, y - h / 2, w, h);
+      c.fillStyle = v <= reorder ? '#ff8a1f' : col; c.fillRect(x0, y - h / 2, w * f, h);
+      for (let k = 1; k < WH.slots; k++) { c.fillStyle = '#04121f'; c.fillRect(x0 + (w * k) / WH.slots - 2, y - h / 2, 4, h); }   // 선반 칸 구분
+      c.fillStyle = '#ffffff'; c.fillRect(x0 + w * (reorder / cap) - 2, y - h / 2 - 8, 4, h + 16);                          // 재주문점
+      c.font = `700 34px ${F}`; c.fillStyle = '#e8eef4'; c.fillText(`${v.toLocaleString('ko-KR')} / ${cap.toLocaleString('ko-KR')}${unit}`, x0 + w + 24, y);
+    };
+    bar(128, '원자재', raw, WH.rawCap, WH.rawReorder, '박스', '#9aa4ae');
+    if (parts != null) bar(196, '부품', parts, WH.partsCap, WH.partsReorder, '개', '#3d8bff');
+    else { c.font = `600 32px ${F}`; c.fillStyle = '#8fb3c9'; c.fillText('부품   셀 부품은 작업자가 보충 (재고 추적은 피지컬AI)', 36, 196); }
+    c.font = `800 38px ${F}`; c.fillStyle = status[1]; c.fillText(status[0], 36, 276);
+    c.font = `600 30px ${F}`; c.fillStyle = '#8fb3c9';
+    c.fillText(`입고 완료 트럭 ${ib.stats.trucks}대 · AGV 출고 ${sim.stats.supplyTrips ?? 0}회${sim.partsTracked ? ` · 부품 보충 출고 ${sim.stats.refills ?? 0}회` : ''} · 흰 선 = 재주문점(이하면 트럭 발주)`, 36, 350);
+    B.tex.needsUpdate = true;
+  }
+
+  // CCTV: 사각지대 없는 배치(js/cctv.js)대로 천장 돔·외벽·기둥 카메라를 달고, 커버리지 지도(바닥 색: 빨강 사각지대 · 연두 1대 · 초록 2대 이상)를 준비한다
+  buildCCTV(sim) {
+    if (this.cctvG) this.root.remove(this.cctvG);
+    const plan = sim.cctv, g = this.cctvG = put(new THREE.Group(), 0, 0, 0, this.root);
+    const body = std(0xe9edf2, { roughness: 0.4 }), dark = std(0x16191d, { roughness: 0.25, metalness: 0.4 }), led = emis(0xff3b3b, 2);
+    this.cctvLeds = [];
+    for (const c of plan.cams) {
+      const cg = put(new THREE.Group(), c.x, 0, c.z, g); cg.userData.cctvId = c.id;
+      put(new THREE.Mesh(new THREE.SphereGeometry(0.7, 8, 6), new THREE.MeshBasicMaterial({ visible: false })), 0, c.y, 0, cg);   // 누르기 쉬운 선택 영역
+      if (c.kind === 'dome') {   // 천장 돔: 천장(8m)에서 내려온 짧은 브래킷 + 돔
+        put(cyl(0.04, 0.04, 8 - c.y, MAT.steel, 6), 0, (8 + c.y) / 2, 0, cg);
+        put(cyl(0.2, 0.2, 0.08, body, 16), 0, c.y, 0, cg);
+        const d = put(mesh(new THREE.SphereGeometry(0.16, 16, 10, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), dark), 0, c.y - 0.03, 0, cg);
+        void d;
+      } else {
+        if (c.kind === 'pole') put(cyl(0.09, 0.12, c.y, MAT.steel, 8), 0, c.y / 2, 0, cg);
+        else put(box(0.5, 0.12, 0.12, MAT.steel), 0, c.y + 0.1, 0, cg).rotation.y = c.face ?? 0;   // 외벽 브래킷
+        put(cyl(0.24, 0.24, 0.12, body, 16), 0, c.y + 0.12, 0, cg);
+        put(mesh(new THREE.SphereGeometry(0.2, 16, 10, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), dark), 0, c.y + 0.06, 0, cg);
+      }
+      const l = put(box(0.05, 0.05, 0.05, led, false), 0.14, c.kind === 'dome' ? c.y + 0.02 : c.y + 0.2, 0, cg); this.cctvLeds.push(l);
+    }
+    // 커버리지 지도 (구역별 캔버스, 1m = 1칸)
+    this.cctvMap = put(new THREE.Group(), 0, 0, 0, g); this.cctvMap.visible = !!this.cctvOn;
+    for (const r of Object.values(plan.regions)) {
+      if (!r.pts.length) continue;
+      const xs = r.pts.map((p) => p.x), zs = r.pts.map((p) => p.z), x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+      const W = Math.round(x1 - x0) + 1, H = Math.round(z1 - z0) + 1, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const c2 = cv.getContext('2d');
+      r.pts.forEach((p, i) => { const n = r.count[i]; c2.fillStyle = n === 0 ? 'rgba(255,60,60,0.85)' : n === 1 ? 'rgba(170,230,90,0.55)' : 'rgba(40,200,120,0.42)'; c2.fillRect(Math.round(p.x - x0), Math.round(p.z - z0), 1, 1); });
+      const tex = new THREE.CanvasTexture(cv); tex.magFilter = THREE.NearestFilter; tex.colorSpace = THREE.SRGBColorSpace;
+      const m = put(new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })), (x0 + x1) / 2, 0.05, (z0 + z1) / 2, this.cctvMap);
+      m.rotation.x = -Math.PI / 2; m.renderOrder = 2;
+    }
+    // 카메라마다 감시 반경 원
+    for (const c of plan.cams) {
+      const ring = put(new THREE.Mesh(new THREE.RingGeometry(c.R - 0.12, c.R, 64), new THREE.MeshBasicMaterial({ color: c.region === 'inside' ? 0x37e8ff : 0xf5b82e, transparent: true, opacity: 0.35, depthWrite: false })), c.x, 0.06, c.z, this.cctvMap);
+      ring.rotation.x = -Math.PI / 2;
+    }
+  }
+  setCCTVMap(on) { this.cctvOn = on; if (this.cctvMap) this.cctvMap.visible = on; }
+
+  // Private 5G: 천장 소형 셀(gNB) — 무선 유닛·안테나 2개·상태등, 커버리지 지도(RSRP 색) · PCI 표시 · 로봇 ↔ 서빙 셀 연결선
+  build5G(sim) {
+    if (this.netG) this.root.remove(this.netG);
+    const net = sim.net, g = this.netG = put(new THREE.Group(), 0, 0, 0, this.root);
+    g.visible = !!net?.on; this.netLinks = null; if (!net?.on) return;
+    const plan = net.plan, body = std(0xf2f4f7, { roughness: 0.45 }), ant = std(0x2b3036, { roughness: 0.5 });
+    this.netLeds = [];
+    for (const c of plan.cells) {
+      const cg = put(new THREE.Group(), c.x, 0, c.z, g); cg.userData.gnbId = c.id;
+      put(new THREE.Mesh(new THREE.SphereGeometry(0.8, 8, 6), new THREE.MeshBasicMaterial({ visible: false })), 0, c.y, 0, cg);   // 누르기 쉬운 선택 영역
+      put(cyl(0.035, 0.035, 8 - (c.y + 0.2), MAT.steel, 6), 0, (8 + c.y + 0.2) / 2, 0, cg);   // 천장 브래킷
+      put(box(0.55, 0.32, 0.38, body), 0, c.y + 0.05, 0, cg);                                   // 무선 유닛 (RU)
+      for (const sd of [-1, 1]) put(box(0.08, 0.42, 0.16, ant), sd * 0.2, c.y - 0.28, 0, cg);    // 안테나
+      const led = emis(0x3dff8a, 2.2); this.netLeds.push(put(box(0.06, 0.04, 0.02, led, false), 0.18, c.y + 0.12, 0.2, cg));
+      put(makeSignSprite(`5G ${c.id} · PCI ${c.pci}`, '#b89bff', 2.6), 0, c.y - 0.85, 0, cg).userData.netLabel = true;
+    }
+    // 커버리지 지도: 2m 칸마다 최강 셀 RSRP 색 (−70 이상 진초록 … −100 미만 빨강 = 음영지역)
+    this.netMap = put(new THREE.Group(), 0, 0, 0, g); this.netMap.visible = !!this.netOn;
+    { const xs = plan.pts.map((p) => p.x), zs = plan.pts.map((p) => p.z), x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+      const W = Math.round((x1 - x0) / 2) + 1, H = Math.round((z1 - z0) / 2) + 1, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const c2 = cv.getContext('2d');
+      plan.pts.forEach((p, i) => { const v = plan.best[i]; c2.fillStyle = v >= -70 ? 'rgba(30,170,90,0.55)' : v >= -75 ? 'rgba(90,205,95,0.5)' : v >= NR.design ? 'rgba(190,230,90,0.5)' : v >= -90 ? 'rgba(245,184,46,0.6)' : v >= NR.require ? 'rgba(255,138,61,0.7)' : 'rgba(255,50,50,0.85)'; c2.fillRect(Math.round((p.x - x0) / 2), Math.round((p.z - z0) / 2), 1, 1); });
+      const tex = new THREE.CanvasTexture(cv); tex.magFilter = THREE.NearestFilter; tex.colorSpace = THREE.SRGBColorSpace;
+      const m = put(new THREE.Mesh(new THREE.PlaneGeometry(W * 2, H * 2), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })), (x0 + x1) / 2, 0.055, (z0 + z1) / 2, this.netMap);
+      m.rotation.x = -Math.PI / 2; m.renderOrder = 2; }
+    // 로봇(5G 모뎀) ↔ 서빙 셀 연결선 — 핸드오버 직후 1.5초는 흰색으로 깜빡인다
+    const n = net.ues.length, geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 6), 3)); geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 6), 3));
+    this.netLinks = put(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false })), 0, 0, 0, this.netMap);
+    this.netLinks.frustumCulled = false;
+    for (const sp of g.children) sp.traverse?.((o) => { if (o.userData.netLabel) o.visible = !!this.netOn; });
+    g.traverse((o) => (o.castShadow = false));
+  }
+  // 선택한 기지국 표시: 바닥 링 + 서비스 영역 테두리 원(셀 반경)
+  selectGnb(id) {
+    if (this.gnbSel) { this.root.remove(this.gnbSel); this.gnbSel = null; }
+    const c = this.sim?.net?.plan?.cells.find((x) => x.id === id); if (!c) return;
+    const g = this.gnbSel = put(new THREE.Group(), c.x, 0, c.z, this.root);
+    const m1 = put(new THREE.Mesh(new THREE.RingGeometry(0.9, 1.15, 40), new THREE.MeshBasicMaterial({ color: 0xb89bff, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide })), 0, 0.07, 0, g); m1.rotation.x = -Math.PI / 2;
+    const m2 = put(new THREE.Mesh(new THREE.RingGeometry(NR.R - 0.15, NR.R, 96), new THREE.MeshBasicMaterial({ color: 0xb89bff, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide })), 0, 0.07, 0, g); m2.rotation.x = -Math.PI / 2;
+    put(cyl(0.02, 0.02, c.y - 0.4, emis(0xb89bff, 2), 8), 0, (c.y - 0.4) / 2, 0, g);
+  }
+  setNetMap(on) { this.netOn = on; if (this.netMap) this.netMap.visible = on; this.netG?.traverse((o) => { if (o.userData.netLabel) o.visible = on; }); }
+  updateNetLinks() {
+    const net = this.sim?.net; if (!this.netOn || !this.netLinks || !net?.on) return;
+    const P = this.netLinks.geometry.attributes.position, C = this.netLinks.geometry.attributes.color, cells = net.plan.cells, t = net.sim.time;
+    const PAL = [[0.37, 0.91, 1], [0.72, 0.61, 1], [0.24, 0.86, 0.52], [0.96, 0.72, 0.18], [1, 0.48, 0.24], [0.35, 0.66, 1]];
+    net.ues.forEach((u, i) => {
+      const p = u.pos(), c = cells[u.hoUntil >= 0 ? u.hoTarget : u.serv] ?? cells[0], y = p.y ?? 1;
+      P.setXYZ(i * 2, p.x, y + 0.6, p.z); P.setXYZ(i * 2 + 1, c.x, c.y - 0.3, c.z);
+      const flash = u.hos[0] && t - u.hos[0].t < 1.5 && Math.floor(t * 8) % 2 === 0, col = u.hoUntil >= 0 || flash ? [1, 1, 1] : PAL[c.pci % 3 * 2 % PAL.length + (c.idx % 2)] ?? PAL[0];
+      C.setXYZ(i * 2, ...col); C.setXYZ(i * 2 + 1, ...col);
+    });
+    P.needsUpdate = true; C.needsUpdate = true;
+  }
+
+  // 건물 외벽 3면(뒷벽·왼쪽 벽·오른쪽 벽 바깥) 건물 사인 — "피지컬AI 실증 메타팩토리"
+  // 남색 백보드 + 흰 글자 + 하늘색 띠. 벽 바깥 0.2m에 붙이고 바깥을 향한다 (앞면은 열려 있어 사인 없음)
+  buildFacadeSigns() {
+    const TEXT = '피지컬AI 실증 메타팩토리';
+    const make = (w, h) => {
+      const c = document.createElement('canvas'); c.width = 2048; c.height = Math.round(2048 * h / w);
+      const g = c.getContext('2d');
+      g.fillStyle = '#0c2048'; g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#37e8ff'; g.fillRect(0, c.height - c.height * 0.07, c.width, c.height * 0.07);
+      let fs = c.height * 0.62; const F = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
+      g.font = `800 ${fs}px ${F}`;
+      while (g.measureText(TEXT).width > c.width * 0.9) { fs *= 0.95; g.font = `800 ${fs}px ${F}`; }
+      g.fillStyle = '#ffffff'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(TEXT, c.width / 2, c.height * 0.47);
+      const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, color: 0xdfe4ea }));
+      return m;
+    };
+    const Y = 5.7, H = 2.3;
+    // 뒷벽 바깥 가운데 (x 0, 출하 도크 문 위쪽을 피한 폭) — 바깥(−z)을 향함
+    const back = put(make(26, H), 0, Y, bk(-20.2), this.root); back.rotation.y = Math.PI;
+    // 왼쪽 벽 바깥: 사인 대신 스타워즈 오프닝 크롤 전광판 (피지컬AI 제조데이터 아키텍처를 무한 스크롤업) — buildCrawl
+    const left = this.buildCrawl();
+    // 오른쪽 벽 바깥 — 바깥(+x)을 향함
+    const right = put(make(26, H), BUILDING.x1 + 0.2, Y, 0, this.root); right.rotation.y = Math.PI / 2;
+    this.facadeSigns = [back, left, right];
+  }
+
+  // 왼쪽 외벽 크롤 전광판 (30 × 7.2m, 입고 도크 문 z −16.8~−12.2를 비켜 z −11.2 ~ 18.8) — 바깥(−x)을 향함
+  // 스타워즈 오프닝 크롤처럼 글자가 아래에서 올라오며 멀어진다(위로 갈수록 좁고 작아짐, 위쪽은 서서히 사라짐). 바탕은 투명 — 건물 외벽 색 그대로, 글자는 검은색
+  // 긴 글을 세로로 길게 그린 원본 캔버스를 만들어 두고, 프레임마다 화면 줄(행)마다 원근에 맞는 원본 줄을 사다리꼴 폭으로 옮겨 그린다 — 끝나면 처음부터 이어진다
+  buildCrawl() {
+    const W = 30, H = 7.2, F = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
+    const TEXT = [
+      ['t', '피지컬AI 실증 메타팩토리'],
+      ['s', '피지컬AI 제조 데이터 구축'],
+      ['p', '제조데이터의 수집·표준화·저장부터 AI 모델 학습·배포·현장운영 및 재학습까지 연계하는 피지컬AI 데이터·모델 선순환 체계'],
+      ['h', '1. 데이터 발생·수집'],
+      ['p', '센서·시계열, 영상·이미지, 로봇·제어, 공정·품질, 설비상태·이력, 로그·이벤트, 시뮬레이션·합성 데이터를 PLC·센서, 로봇제어기, SCADA, MES/MOM, PLM, ERP, 디지털트윈에서 모은다.'],
+      ['h', '2. 데이터 저장·관리'],
+      ['p', '데이터 레이크하우스 — Raw(원천데이터 보관) → Refined(정제) → Curated(큐레이티드). 데이터 카탈로그·검색, 메타데이터 관리, 데이터 계보, 분류·태깅·정책, 보안·권한·접근관리. Object Storage · 시계열 DB · 파일 저장소.'],
+      ['h', '3. 데이터 정제·표준화·제공'],
+      ['p', '수집/추출, 품질검증, 시간 동기화, 정제·변환, 표준연계/정보모델링(AAS · OPC UA · MQTT · ISA-95), 비식별화/보안처리를 거쳐 DW/DM, Feature Store, 학습 데이터셋, API·서비스로 제공한다.'],
+      ['h', '4. AI 모델 학습·운영 (MLOps)'],
+      ['p', '모델 개발·학습·튜닝, 실험·메타데이터 관리, 모델 레지스트리·버전관리, 모델 검증·승인·배포·서빙, 성능·드리프트 모니터링, 지속적 통합·배포·학습(CI/CD/CT).'],
+      ['h', '5. 피지컬AI 서비스·현장 환류'],
+      ['p', '피지컬AI 기반 설비·로봇 제어, AI 비전 품질검사·불량탐지, 로봇·공정 자율최적화, 예지보전·이상징후 탐지, 생산계획·운영효율 최적화, 협업형 지능 관제, sLLM 현장지원, 디지털트윈 가상검증.'],
+      ['h', '운영성과 · 현장데이터 환류 (선순환)'],
+      ['p', '운영성과·이상·이벤트 데이터를 다시 모아 모델 성능을 평가하고 원인을 분석해, 데이터·모델·제어로직을 보정하고 재학습·재배포로 성능을 높인다.'],
+      ['h', '표준연계 및 상호운용성'],
+      ['p', 'AAS (IEC 63278) · OPC UA · MQTT · ISA-95 · 공통 데이터 모델(CDM) · 시간동기화(NTP/PTP)'],
+      ['h', '공통운영'],
+      ['p', '오케스트레이션 · 통합 모니터링 · 데이터 계보 · 보안·권한관리 · 감사·로그 · 알림·이벤트 · 자원관리 · 장애대응·백업'],
+    ];
+    // 원본: 폭 1100px 글 기둥 (스타워즈 노랑, 양쪽 정렬 느낌의 가운데 정렬)
+    const SW = 1100, src = document.createElement('canvas'); src.width = SW;
+    const sg = src.getContext('2d'), FONT = { t: `900 92px ${F}`, s: `800 64px ${F}`, h: `800 58px ${F}`, p: `700 48px ${F}` }, LH = { t: 120, s: 96, h: 86, p: 68 };
+    const lines = [];
+    for (const [k, txt] of TEXT) {
+      sg.font = FONT[k]; let cur = '';
+      const words = k === 'p' ? txt.split(' ') : [txt];
+      if (k === 'h' || k === 's') lines.push(['gap', '', 40]);
+      for (const w of words) { const nx = cur ? `${cur} ${w}` : w; if (sg.measureText(nx).width > SW - 60 && cur) { lines.push([k, cur]); cur = w; } else cur = nx; }
+      if (cur) lines.push([k, cur]);
+      lines.push(['gap', '', k === 't' ? 30 : 24]);
+    }
+    lines.push(['gap', '', 520]);   // 한 바퀴 끝 — 빈 화면 뒤에 처음부터 다시
+    src.height = lines.reduce((a, [k, , g]) => a + (k === 'gap' ? g : LH[k]), 0);
+    sg.clearRect(0, 0, SW, src.height); sg.textAlign = 'center'; sg.textBaseline = 'middle';
+    let y = 0;
+    for (const [k, txt, g] of lines) { if (k === 'gap') { y += g; continue; } sg.font = FONT[k]; sg.fillStyle = k === 'h' || k === 't' ? '#000000' : '#111111'; sg.fillText(txt, SW / 2, y + LH[k] / 2); y += LH[k]; }
+    // 화면 캔버스 (30 × 7.2m → 2048 × 492)
+    const cv = document.createElement('canvas'); cv.width = 2048; cv.height = Math.round(2048 * H / W);
+    const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+    const g = put(new THREE.Group(), INBOUND.wallX - 0.2, 4.1, 3.8, this.root); g.rotation.y = -Math.PI / 2;
+    put(new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false })), 0, 0, 0, g);   // 외벽에 바로 쓴 글자 (테두리 없음)
+    g.traverse((o) => (o.castShadow = false));
+    this.crawl = { cv, src, tex, pos: 0, t: 0 };
+    this.drawCrawl(0);
+    return g;
+  }
+  drawCrawl(rdt) {
+    const C = this.crawl; if (!C) return;
+    C.t += rdt; if (C.t < 1 / 30 && rdt) return;   // 초당 약 30번 그린다
+    C.pos = (C.pos + C.t * 55) % C.src.height; C.t = 0;   // 스크롤 속도: 원본 55px/초
+    const { cv, src } = C, g = cv.getContext('2d'), Wc = cv.width, Hc = cv.height, SH = src.height;
+    g.clearRect(0, 0, Wc, Hc);
+    // 원근: 화면 줄 v(0 위 ~ 1 아래), 소실선은 화면 위 hz만큼 바깥 — 폭 ∝ (v + hz), 깊이 ∝ 1/(v + hz)
+    const hz = 0.32, bottomW = Wc * 0.62, depth = (v) => 1 / (v + hz), d1 = depth(1), span = 1500;
+    for (let row = 0; row < Hc; row++) {
+      const v = row / Hc, w = bottomW * (v + hz) / (1 + hz);
+      let sy = (C.pos + (depth(v) - d1) / (depth(0) - d1) * span * -1 + span) % SH; if (sy < 0) sy += SH;
+      g.globalAlpha = Math.min(1, v * 2.2);   // 위쪽은 멀어지며 서서히 사라짐
+      g.drawImage(src, 0, Math.floor(sy), src.width, 1, (Wc - w) / 2, row, w, 1);
+    }
+    g.globalAlpha = 1;
+    C.tex.needsUpdate = true;
+  }
+
+  // 건물 밖 트럭 야드 (뒷벽 바깥, 검은 외부): 아스팔트·도크 접안선·대기 자리·진출입 도로
+  buildYard() {
+    const r = this.root;
+    const flat = (w, d, mat, x, z, y = 0.01) => { const m = put(new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat), x, y, z, r); m.rotation.x = -Math.PI / 2; m.receiveShadow = true; return m; };
+    const line = new THREE.MeshBasicMaterial({ color: 0xf2c230 }), white = new THREE.MeshBasicMaterial({ color: 0xd9dee4 });
+    // 출하 트럭 야드 (오른쪽 벽 바깥): 야드 로컬 좌표(도크 벽 z −20 · 바깥 −z)로 그리고 그룹째 90° 돌린다 (shipping.js SHIP_FRAME)
+    const sy = put(new THREE.Group(), SHIP_FRAME.x, 0, SHIP_FRAME.z, r); sy.rotation.y = SHIP_FRAME.rot;
+    const flatY = (w, d, mat, x, z, y = 0.01) => { const m = put(new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat), x, y, z, sy); m.rotation.x = -Math.PI / 2; m.receiveShadow = true; return m; };
+    flatY(38, 28, std(0x2b3036, { roughness: 0.95 }), 33, -34.2, -0.01);
+    flatY(112, 7, std(0x24282d, { roughness: 0.95 }), 54, YARD.roadZ, 0.0);   // 북쪽 끝 x −2 (트럭 진입) ~ 남쪽 110
+    for (let x = 0; x < 110; x += 4) flatY(2, 0.15, white, x, YARD.roadZ, 0.02);
+    for (const bx of YARD.bays) for (const sd of [-1, 1]) flatY(0.15, 12, line, bx + sd * 1.7, -26.4, 0.02);
+    // 입고 트럭 야드 (왼쪽 벽 바깥 · 건물 앞쪽): 바닥, 남북 도로(북행 입차·남행 출차), 건물 앞쪽 진입로, 도크 앞 정차선, 표시
+    const DZ = INBOUND.dockZ, RZ = INBOUND.roadZ;
+    flat(42, RZ + 4 - (DZ - 21), std(0x2b3036, { roughness: 0.95 }), -72, (DZ - 21 + RZ + 4) / 2, -0.01);   // 서쪽으로 돌아 도크 중심선에 서는 공간까지
+    flat(9, RZ + 2 - (DZ - 8.5), std(0x24282d, { roughness: 0.95 }), INBOUND.roadX, (DZ - 8.5 + RZ + 2) / 2, 0.0);
+    flat(81, 7, std(0x24282d, { roughness: 0.95 }), -92.5, RZ, 0.0);
+    for (let x = -132; x < -53; x += 4) flat(2, 0.15, white, x, RZ, 0.02);
+    for (let z = DZ - 7; z < RZ - 2; z += 4) flat(0.15, 2, white, INBOUND.roadX, z, 0.02);
+    for (const sd of [-1, 1]) flat(12, 0.15, line, INBOUND.wallX - 6.2, DZ + sd * 1.7, 0.02);
+    { const c2 = document.createElement('canvas'); c2.width = 1024; c2.height = 128;
+      const g2 = c2.getContext('2d'); g2.fillStyle = 'rgba(61,220,132,0.95)'; g2.font = '700 64px "Apple SD Gothic Neo", "Noto Sans KR", sans-serif'; g2.textAlign = 'center'; g2.textBaseline = 'middle';
+      g2.fillText('입고 트럭 야드 · 입고 도크', 512, 64);
+      const t2 = new THREE.CanvasTexture(c2); t2.colorSpace = THREE.SRGBColorSpace;
+      const m2 = flat(14, 1.75, new THREE.MeshBasicMaterial({ map: t2, transparent: true, depthWrite: false }), -60, DZ - 7, 0.03); m2.rotation.z = 0; }
+    const tx = document.createElement('canvas'); tx.width = 1024; tx.height = 128;
+    const c = tx.getContext('2d'); c.fillStyle = 'rgba(242,194,48,0.95)'; c.font = '700 64px "Apple SD Gothic Neo", "Noto Sans KR", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText('출하 트럭 야드 · 출하 도크', 512, 64);
+    const tex = new THREE.CanvasTexture(tx); tex.colorSpace = THREE.SRGBColorSpace;
+    flatY(16, 2, new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }), YARD.bays[0] + 7, -30, 0.03).rotation.z = Math.PI / 2;   // 글자는 화면 앞에서 바로 읽히게
+  }
+
+  // 미니로드 상태 초기화 — 화면을 만들 때마다(setup, 새 시뮬레이션) 크레인 작업 · 입출고 자리 토트 · 칸 채움 표시를 처음으로
+  buildWhStock() {
+    for (const S of this.miniloads ?? []) {
+      S.job = null; S.ph = 'move'; S.cr.position.z = 0; S.car.position.y = MINILOAD.lv[0]; S.fk.position.x = 0; S.tote.visible = false;
+      for (const b of S.outs) { b.state = 'empty'; b.tote.visible = false; b.m = null; }
+      for (const b of S.ins) { b.n = 0; b.totes.forEach((t) => (t.visible = false)); b.pallet.visible = false; }
+      S.shown = {};
+    }
+    this.mlFace = new Map();
+  }
+
+  // ── 미니로드 AS/RS (SSI Miniload형) — 크레인 1대가 맡는 선반 구간 하나 ──
+  // 로컬 원점 = 구간 가운데 바닥, 로컬 x = 세계 x − WH_RACK.x (서쪽 A열 −0.9 · 크레인 통로 0 · 동쪽 B열 +0.9), 로컬 z = 세계 z − zc
+  // 저장: 4단(MINILOAD.lv) × 두 줄 × nb베이, 한 칸 = 토트 1개. 그 아래 바닥층: 서쪽 면 입고 팔레트 받침(지게차가 내려놓음) · 동쪽 면 출고 이재 컨베이어
+  // bayItem(i) = 베이 i(북 → 남)의 { key: 재고 품목, mat: 토트 재질 } · outs = [{ z, end(동쪽 끝 세계 x), pick: 차량이 서는 자리, keys }] · ins = [{ z, keys }]
+  buildMiniload(zc, L, nb, bayItem, outs, ins) {
+    const M = MINILOAD, X = (M.aisle + M.row) / 2, H = L / 2, bay = L / nb, T = M.top;
+    const g = put(new THREE.Group(), WH_RACK.x, 0, zc, this.root);
+    const faces = [-M.half, -M.aisle / 2, M.aisle / 2, M.half];
+    const bays = [...outs.map((o) => [o.z - zc, 0.4]), ...ins.map((o) => [o.z - zc, 0.62])];
+    for (let k = 0; k <= nb; k += 2) for (const x of faces) {   // 기둥 (2베이마다) — 입출고 자리 앞은 바닥층을 비우고 첫 단부터 세운다
+      const z = -H + k * bay, y0 = bays.some(([bz, w]) => Math.abs(z - bz) < w) && k > 0 && k < nb ? M.lv[0] - 0.1 : 0;
+      put(box(0.08, T - y0, 0.08, MAT.accent), x, (T + y0) / 2, z, g);
+    }
+    for (const y of M.lv) for (const sd of [-1, 1]) {
+      for (const x of [M.aisle / 2 + 0.03, M.half - 0.03]) put(box(0.05, 0.1, L, MAT.orange), sd * x, y - 0.06, 0, g);   // 줄 앞뒤 로드 빔
+      put(box(M.row - 0.06, 0.025, L, MAT.steel), sd * X, y - 0.02, 0, g);   // 선반 판
+    }
+    for (const x of faces) put(box(0.1, 0.12, L, MAT.accent), x, T, 0, g);   // 크라운 프레임
+    for (const z of [-H, H]) for (const sd of [-1, 1]) for (let k = 1; k < M.lv.length; k++) {   // 끝면 X 브레이싱 (줄마다 단 사이)
+      const y0 = M.lv[k - 1], h = M.lv[k] - y0;
+      for (const s2 of [-1, 1]) put(box(0.03, Math.hypot(M.row, h), 0.03, MAT.steel), sd * X, y0 + h / 2, z, g).rotation.z = s2 * Math.atan2(M.row, h);
+    }
+    put(box(0.12, 0.06, L + 0.3, MAT.steel), 0, 0.03, 0, g);   // 바닥 주행 레일
+    put(box(0.1, 0.08, L, MAT.steel), 0, T - 0.12, 0, g);      // 상부 가이드 레일
+    // 스태커 크레인: 주행 대차 · 두 기둥 마스트 · 승강 캐리지 · 양쪽 줄로 뻗는 텔레스코픽 포크
+    const cr = put(new THREE.Group(), 0, 0, 0, g);
+    for (const z of [-0.42, 0.42]) { put(box(0.4, 0.32, 0.3, MAT.orange), 0, 0.2, z, cr); put(box(0.14, T - 0.62, 0.12, MAT.orange), 0, (T - 0.62) / 2 + 0.36, z, cr); }
+    put(box(0.3, 0.14, 1.0, MAT.dark), 0, T - 0.26, 0, cr);
+    put(box(0.3, 0.5, 0.26, MAT.dark), 0, 0.6, 0.72, cr);   // 제어반
+    put(box(0.08, 0.06, 0.08, emis(0xf5b82e, 1.8), false), 0, T - 0.15, 0.56, cr);   // 운전 표시등
+    const car = put(new THREE.Group(), 0, M.lv[0], 0, cr);
+    put(box(0.74, 0.05, 0.7, MAT.steel), 0, -0.03, 0, car);
+    for (const z of [-0.36, 0.36]) put(box(0.74, 0.24, 0.03, MAT.dark), 0, 0.1, z, car);
+    const fk = put(new THREE.Group(), 0, 0, 0, car);
+    for (const z of [-0.3, 0.3]) put(box(0.72, 0.05, 0.05, MAT.accent), 0, 0.02, z, fk);
+    const tote = put(box(TOTE.x, TOTE.y, TOTE.z, MAT.raw), 0, TOTE.y / 2 + 0.05, 0, fk); tote.visible = false;
+    // 저장 칸 토트 (재고만큼 보인다)
+    const cells = [];
+    for (let i = 0; i < nb; i++) {
+      const it = bayItem(i), z = -H + (i + 0.5) * bay;
+      M.lv.forEach((y, l) => { for (const sd of [-1, 1]) cells.push({ key: it.key, mat: it.mat, l, x: sd * X, y, z, mesh: put(box(TOTE.x, TOTE.y, TOTE.z, it.mat), sd * X, y + TOTE.y / 2, z, g) }); });
+    }
+    cells.sort((p, q) => p.l - q.l);   // 아래 단부터 찬다
+    // 출고 이재 컨베이어 (동쪽 면 바닥층 → 차량 쪽으로 내민 롤러)
+    // AGV 자리는 선반 면 밖으로 신축(텔레스코픽) 롤러가 AGV가 섰을 때만 뻗어 나가고 평소엔 선반 바닥층 안으로 들어가 있다 — 지나가는 지게차·사람과 닿지 않게
+    const face = M.half + 0.03;
+    const O = outs.map((o) => {
+      const z = o.z - zc, x1 = o.end - WH_RACK.x, fx = Math.min(x1, face);
+      mlConveyor(g, M.aisle / 2 + 0.05, fx, z, M.conv, 0.68);
+      let ext = null, len = 0;
+      if (x1 > face + 0.05) {
+        len = x1 - face; ext = put(new THREE.Group(), -len, 0, 0, g); ext.userData.legless = true;
+        mlConveyor(ext, face, x1, z, M.conv - 0.025, 0.62);
+        put(box(0.05, 0.2, 0.64, emis(0x3ddc84, 0.9), false), x1 + 0.02, M.conv, z, ext);   // 끝 스토퍼 (초록)
+      } else put(box(0.05, 0.2, 0.7, emis(0x3ddc84, 0.9), false), fx + 0.02, M.conv + 0.02, z, g);
+      return { ...o, lz: z, x1, rest: fx - TOTE.x / 2 - 0.04, ext, len, e: 0, tote: Object.assign(put(box(TOTE.x, TOTE.y, TOTE.z, MAT.raw), X, M.conv + TOTE.y / 2, z, g), { visible: false }), state: 'empty', k: 0, rr: 0 };
+    });
+    // 입고 팔레트 받침 (서쪽 면 바닥층, 지게차 포크가 닿는 낮은 롤러) — 토트 4개(2 × 2단)를 크레인이 하나씩 칸에 넣는다
+    const I = ins.map((o) => {
+      const z = o.z - zc, mat = cells.find((c) => c.key === o.keys[0])?.mat ?? MAT.raw;
+      mlConveyor(g, -M.half - 0.3, -M.aisle / 2 - 0.05, z, 0.18, 1.24);
+      const pallet = put(box(0.9, 0.1, 1.15, MAT.pallet), -X, 0.23, z, g); pallet.visible = false;
+      const totes = [0, 1, 2, 3].map((k) => Object.assign(put(box(TOTE.x, TOTE.y, TOTE.z, mat), -X, 0.28 + Math.floor(k / 2) * (TOTE.y + 0.01) + TOTE.y / 2, z + (k % 2 ? 0.29 : -0.29), g), { visible: false }));
+      return { ...o, lz: z, mat, pallet, totes, n: 0 };
+    });
+    const S = { g, cr, car, fk, tote, cells, outs: O, ins: I, job: null, ph: 'move', rr: 0, shown: {}, zc };
+    (this.miniloads ??= []).push(S);
+    return S;
+  }
+  // 미니로드 운전 (렌더 프레임마다): 출고 자리가 비면 크레인이 칸에서 토트를 꺼내 출고 컨베이어에 대 두고,
+  // AGV·휴머노이드가 그 앞에 서서 상차(wait)하는 동안 토트가 롤러를 타고 차량 위로 넘어간다. 입고 받침에 팔레트가 오면 남는 틈에 칸으로 넣는다
+  animMiniload(S, dt) {
+    const M = MINILOAD, sim = this.sim, X = (M.aisle + M.row) / 2, W = (this.mlWait ??= new WeakMap());
+    const has = (k) => (k === 'parts' && !sim.partsTracked) || stockOf(sim, k) > 0;   // 부품 재고를 따로 세지 않는 모드는 늘 있음
+    const waitAt = (m, x, z, r = 0.5) => Math.hypot(m.x - x, m.z - z) < r && m.steps?.[0]?.wait != null;
+    for (const b of S.outs) {
+      if (b.state !== 'xfer') {
+        const m = sim.movers.find((o) => !o.receiver && waitAt(o, b.pick.x, b.pick.z));
+        if (m) {   // 차량이 섰는데 아직 토트가 오는 중이면 출고 자리에 바로 대 둔다 (크레인 작업 취소)
+          if (S.job?.bay === b) { S.job = null; S.ph = 'move'; S.tote.visible = false; }
+          b.state = 'xfer'; b.m = m; b.st = m.steps[0]; if (!W.has(b.st)) W.set(b.st, b.st.wait); b.tote.visible = true;
+        }
+      }
+      if (b.ext) {   // 신축 롤러: AGV가 상차 자리 가까이 오면 뻗고, 떠나면 접힌다
+        const agv = sim.movers.some((o) => o.kind === 'agv' && waitAt(o, b.pick.x, b.pick.z, 0.3));   // 상차 자리에 멈춘 뒤에만 뻗는다 — 들어오는 중에 뻗으면 AGV 상판 옆면에 롤러가 닿는다
+        b.e = Math.max(0, Math.min(1, b.e + (agv ? 1 : -1) * dt * 1.6)); b.ext.position.x = -b.len * (1 - b.e);
+      }
+      const t = b.tote, end = b.rest;
+      if (b.state === 'roll') { b.k = Math.min(1, b.k + dt / 1.2); t.position.set(X + (end - X) * b.k, M.conv + TOTE.y / 2, b.lz); if (b.k >= 1) b.state = 'ready'; }
+      else if (b.state === 'xfer') {
+        const m = b.m;
+        if (m.steps?.[0] !== b.st) { b.state = 'empty'; t.visible = false; b.m = null; this.mlFace?.delete(m); continue; }   // 상차 끝 — 차량 적재물·휴머노이드 손 바구니로 넘어감
+        const w0 = W.get(b.st) || 1; let k = Math.max(0, Math.min(1, 1 - b.st.wait / w0));
+        if (m.kind === 'humanoid' || m.kind === 'human') {
+          // 휴머노이드: 선반(서쪽)을 보고 서서 컨베이어 끝의 토트를 두 손으로 들어 올린다 — 토트는 몸 앞(손 높이)까지만 오고 몸통으로 들어가지 않는다
+          (this.mlFace ??= new Map()).set(m, -Math.PI / 2);
+          const hx = m.x - WH_RACK.x - 0.36 - TOTE.x / 2, u = Math.min(1, k * 2);
+          t.position.set(end + (hx - end) * u, M.conv + TOTE.y / 2 + 0.5 * u, b.lz + (m.z - S.zc - b.lz) * u);
+        } else {
+          // 넘겨줄 자리: AGV는 적재 면 가운데 · 지게차는 포크 위(차체 앞 1.3m) — 지게차 가운데로 보내면 토트가 카운터웨이트와 겹친다
+          const fl = m.kind !== 'agv' && this.vehicleViews?.find((v) => v.v === m)?.g.userData.load, fp = fl && S.g.worldToLocal(fl.getWorldPosition(new THREE.Vector3()));
+          const mx = fp ? fp.x : m.x - WH_RACK.x, mz = fp ? fp.z : m.z - S.zc, dy = m.kind === 'agv' ? 0.56 : fp ? fp.y + 0.12 : 0.2;   // AGV 적재 면 · 지게차 포크 위 팔레트 면
+          if (b.ext) k = Math.max(0, (k - 0.3) / 0.7);   // 신축 롤러가 다 뻗은 뒤 넘긴다
+          const arc = fp ? Math.sin(Math.PI * k) * 0.4 : 0;   // 지게차는 컨베이어 옆에 나란히 서서 받는다 — 포크 뿌리(힐, 높이 0.55m) 위로 넘겨 포크에 내려놓는다
+          t.position.set(end + (mx - end) * k, M.conv + (dy - M.conv) * Math.min(1, k * 1.4) + TOTE.y / 2 + arc, b.lz + (mz - b.lz) * k);
+        }
+      }
+    }
+    for (const b of S.ins) {   // 입고 지게차가 받침 앞에서 팔레트를 내려놓는 중이면 토트 4개가 생긴다
+      const f = sim.forklifts?.find((o) => o.receiver && o.x < WH_RACK.x - M.half - 0.5 && Math.abs(o.z - b.z) < 0.6 && o.steps?.[0]?.wait != null && o.load);
+      if (f && !W.has(f.steps[0])) { W.set(f.steps[0], 1); b.n = 4; b.pallet.visible = true; b.totes.forEach((x) => (x.visible = true)); }
+    }
+    // 다음 작업: ① 빈 출고 자리 채우기 (재고 있는 품목) ② 입고 받침 토트를 칸에 넣기 ③ 없으면 구간 가운데 아래에서 대기
+    if (!S.job) {
+      const ob = S.outs.find((b) => b.state === 'empty' && b.keys.some(has));
+      if (ob) {
+        const ks = ob.keys.filter(has), key = ks[ob.rr++ % ks.length];
+        const all = S.cells.filter((c) => c.key === key), vis = all.filter((c) => c.mesh.visible), pool = vis.length ? vis : all, c = pool[(S.rr = (S.rr * 7 + 3) % 9973) % pool.length];
+        ob.state = 'coming';
+        S.job = { bay: ob, steps: [
+          { z: c.z, y: c.y, x: c.x, act: () => { S.tote.material = c.mat; S.tote.visible = true; } },
+          { z: ob.lz, y: M.conv, x: X, act: () => { S.tote.visible = false; ob.tote.material = c.mat; ob.tote.visible = true; ob.state = 'roll'; ob.k = 0; } },
+        ] };
+      } else {
+        const ib = S.ins.find((b) => b.n > 0);
+        if (ib) {
+          const k = ib.n - 1, tt = ib.totes[k], pool = S.cells.filter((c) => c.key === ib.keys[0]), c = pool[(S.rr = (S.rr * 7 + 3) % 9973) % pool.length];
+          S.job = { steps: [
+            { z: tt.position.z, y: tt.position.y - TOTE.y / 2 - 0.05, x: -X, act: () => { tt.visible = false; ib.n--; if (!ib.n) ib.pallet.visible = false; S.tote.material = ib.mat; S.tote.visible = true; } },
+            { z: c.z, y: c.y, x: c.x, act: () => { S.tote.visible = false; } },
+          ] };
+        }
+      }
+    }
+    const app = (cur, to, v) => (Math.abs(to - cur) <= v ? to : cur + Math.sign(to - cur) * v);
+    const cr = S.cr.position, car = S.car.position, fk = S.fk.position, tg = S.job?.steps[0] ?? { z: 0, y: M.lv[0], x: 0 };
+    if (S.ph === 'move') {
+      cr.z = app(cr.z, tg.z, 3.0 * dt); car.y = app(car.y, tg.y, 1.6 * dt); fk.x = app(fk.x, 0, 1.4 * dt);
+      if (S.job && cr.z === tg.z && car.y === tg.y && fk.x === 0) S.ph = 'ext';
+    } else if (S.ph === 'ext') {
+      fk.x = app(fk.x, tg.x, 1.4 * dt);
+      if (fk.x === tg.x) { tg.act?.(); S.ph = 'ret'; }
+    } else if (S.ph === 'ret') {
+      fk.x = app(fk.x, 0, 1.4 * dt);
+      if (fk.x === 0) { S.job?.steps.shift(); if (!S.job?.steps.length) S.job = null; S.ph = 'move'; }
+    }
+  }
+  // 칸 채움: 품목 재고 ÷ (가득 재고 ÷ 칸 수)만큼 아래 단부터 토트가 보인다
+  fillMiniload(S) {
+    const sim = this.sim;
+    for (const key of new Set(S.cells.map((c) => c.key))) {
+      const I = WH_ITEMS.find((x) => x.key === key), v = key === 'parts' && !sim.partsTracked ? I.cap : stockOf(sim, key);
+      if (S.shown[key] === v) continue; S.shown[key] = v;
+      const cs = S.cells.filter((c) => c.key === key), n = Math.ceil((Math.max(0, v) / I.cap) * cs.length - 1e-9);
+      cs.forEach((c, i) => (c.mesh.visible = i < n));
+    }
+  }
+
+  // 정비실 비품: 뒤쪽(+z, 앞면이 실내를 봄) 캐비닛 · 공구 카트 · 작업대(공구 타공판) · 소모품 선반 · 에어 컴프레서, 오른쪽 확장 구역에 청소도구,
+  // 왼쪽에 소화기 — 양쪽 끝은 정비 휴머노이드 충전 스테이션, 가운데는 비워 통로·바닥 표시가 보이게 한다
+  buildTechFurniture() {
+    for (const { furn: G } of this.techRooms ?? []) {   // 정비실마다 같은 비품 (정밀조립 · A-1 · A-2)
+      G.clear();
+      const M = RENDER.assets.maint;
+      if (!blenderOn() || !M) {   // Blender 모델이 없으면 기본 상자: 공구함(빨강) · 작업대(회색)
+        put(box(0.6, 1.8, 1.6, std(0xc0392b)), -2.15, 0.9, -1.4, G); put(box(0.7, 0.9, 1.6, MAT.steel), 2.15, 0.45, -1.4, G); continue;
+      }
+      const place = (name, x, z, ry = Math.PI) => { const o = M.getObjectByName(name).clone(); o.position.set(x, 0, z); o.rotation.set(0, ry, 0); G.add(o); return o; };
+      place('M_Locker', -2.0, -0.05); place('M_ToolChest', -1.15, 0.0); place('M_Workbench', 0.35, -0.2);
+      place('M_Shelf', 1.95, -0.05); place('M_Compressor', 3.1, -0.15); place('M_Cleaning', 4.35, -0.55);
+      place('M_Extinguisher', -2.25, -1.0, Math.PI / 2);   // (A형 사다리는 쓰는 작업이 없어 두지 않는다)
+    }
+  }
+
+  // 확장 선반 (A-1 유연생산 · A-2 적응가공 자재) = 미니로드 ② — 물류 선반 바로 북쪽에 같은 줄로 이어 선 두 줄 4단 선반 · 크레인 1대
+  // 열(북 → 남, 2베이씩): 유연생산 원재료 · 적응가공 원재료 · 유연생산 부품 · 적응가공 부품 — 서쪽 면 입고 받침(지게차) · 동쪽 면 출고 컨베이어
+  // 출고: 원재료 두 자리 = Zone 전용 AGV 자동 적재, 부품 한 자리 = 물류 휴머노이드 키트 피킹 (sim.js KIT_PICK)
+  buildXRack() {
+    const r = this.root, items = WH_ITEMS.filter((x) => x.zone), mat = {};
+    for (const I of items) mat[I.key] = I.kind === 'raw' ? (I.zone === 'flex' ? MAT.steel : MAT.crate) : std(XWH[I.zone].col);
+    this.buildMiniload(XRACK.z, XRACK.len, 8, (i) => ({ key: items[Math.floor(i / 2)].key, mat: mat[items[Math.floor(i / 2)].key] }), MINILOAD_OUTS.x,
+      items.map((I) => ({ z: xrackZ(I.key), keys: [I.key] })));
+    for (const I of items) put(makeSignPlate(I.label, I.zone === 'flex' ? '#6ab8ff' : '#ff9a6a', 1.5), XRACK.x + MINILOAD.half + 0.15, 6.0, xrackZ(I.key), r).rotation.y = Math.PI / 2;   // 열 표지 (동쪽 면) — 선반에 고정
+    put(makeSignPlate('미니로드 ② · 확장 Zone', '#8fd3ff', 3.0), XRACK.x + MINILOAD.half + 0.15, 6.5, XRACK.z, r).rotation.y = Math.PI / 2;
+    // 확장 선반 재고 현황판: 선반 뒤 왼쪽 벽(동쪽을 향함) — 선반이 4단으로 높아져 꼭대기 위 대신 물류 선반 현황판과 나란히 벽에 단다
+    const sc = document.createElement('canvas'); sc.width = 1100; sc.height = 420;
+    this.xBoard = { cv: sc, tex: new THREE.CanvasTexture(sc), key: '' }; this.xBoard.tex.colorSpace = THREE.SRGBColorSpace; this.xBoard.tex.anisotropy = 8;
+    const bd = put(new THREE.Group(), INBOUND.wallX + 0.3, 6.25, XRACK.z, r); bd.rotation.y = Math.PI / 2; bd.scale.setScalar(0.8);
+    put(box(XRACK.len + 0.2, 2.85, 0.12, std(0x0b0d10, { roughness: 0.5, metalness: 0.4 })), 0, 0, -0.07, bd);
+    put(new THREE.Mesh(new THREE.PlaneGeometry(XRACK.len, (XRACK.len * 420) / 1100), new THREE.MeshBasicMaterial({ map: this.xBoard.tex, toneMapped: false })), 0, 0, 0, bd);
+    bd.traverse((o) => (o.castShadow = false));
+  }
+  // 확장 선반 현황판 (칸 채움은 fillMiniload)
+  updateXRack() {
+    const B = this.xBoard; if (!B) return;
+    const sim = this.sim, vals = WH_ITEMS.filter((x) => x.zone).map((I) => [I, stockOf(sim, I.key)]), st = sim.zoneStarved ?? {};
+    const key = vals.map(([, v]) => v).join('|') + Object.values(st).join('|');
+    if (key === B.key) return; B.key = key;
+    const c = B.cv.getContext('2d'), W = B.cv.width, F = '"Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
+    c.fillStyle = '#04121f'; c.fillRect(0, 0, W, B.cv.height);
+    c.fillStyle = '#e8eef4'; c.font = `800 42px ${F}`; c.textBaseline = 'middle'; c.fillText('📦 확장 선반 · 유연생산 · 적응가공', 30, 44);
+    vals.forEach(([I, v], k) => {
+      const y = 112 + k * 64, x0 = 250, w = 540, h = 36, f = Math.max(0, Math.min(1, v / I.cap));
+      c.font = `700 32px ${F}`; c.fillStyle = I.zone === 'flex' ? '#6ab8ff' : '#ff9a6a'; c.fillText(I.label, 30, y);
+      c.fillStyle = '#16232f'; c.fillRect(x0, y - h / 2, w, h);
+      c.fillStyle = v <= I.reorder ? '#ff8a1f' : I.kind === 'raw' ? '#9aa4ae' : '#3d8bff'; c.fillRect(x0, y - h / 2, w * f, h);
+      for (let s = 1; s < 3; s++) { c.fillStyle = '#04121f'; c.fillRect(x0 + (w * s) / 3 - 2, y - h / 2, 4, h); }   // 선반 칸(3단) 구분
+      c.fillStyle = '#ffffff'; c.fillRect(x0 + w * (I.reorder / I.cap) - 2, y - h / 2 - 7, 4, h + 14);   // 재주문점
+      c.font = `700 30px ${F}`; c.fillStyle = '#e8eef4'; c.fillText(`${v} / ${I.cap}${I.unit}`, x0 + w + 20, y);
+    });
+    const starved = Object.entries(st).filter(([, on]) => on).map(([z]) => XWH[z].code);
+    c.font = `700 30px ${F}`; c.fillStyle = starved.length ? '#ff8a1f' : '#8fb3c9';
+    c.fillText(starved.length ? `⛔ ${starved.join(' · ')} 투입구 자재 대기 — 입고 트럭 도착 시 재개` : '투입구가 대상물 1개마다 원재료 1 · 부품 키트 1을 꺼냄 · 흰 선 = 재주문점', 30, 382);
+    B.tex.needsUpdate = true;
+  }
+
+  buildAreas() {
+    const r = this.root;
+    // 자재 공급 차질 경보: 자재창고 랙 주변
+    this.whAlarm = put(makeAlarmFx(12.4, 4.6, MINILOAD.top + 0.4), WH_RACK.x + 0.6, 0, WH_RACK.z, r); this.whAlarm.rotation.y = Math.PI / 2;
+    // 물류 선반(자재창고 랙) = 미니로드 ① — 왼쪽 벽 입고 지게차 통로와 로봇 통로 사이에 남북으로 선 두 줄 4단 선반 · 크레인 1대 (12베이 × 2줄 × 4단 = 토트 96칸)
+    // 베이(북 → 남, 3베이씩): e-axle 부품 · 도어트림 부품 · e-axle 원자재 · 도어트림 원자재 — 제품별로 따로 보관
+    // 서쪽 면 바닥 입고 받침(지게차가 팔레트를 내려놓음) → 크레인이 칸에 넣고, 출고 때는 칸 → 동쪽 면 출고 컨베이어 → AGV 롤러 자동 적재 · 휴머노이드 피킹
+    this.whSign = put(makeSignPlate('⛔ 출고 중단 · 공급 차질', '#ff8a1f', 7.5), WH_RACK.x + 1.5, 7.4, WH_RACK.z, r); this.whSign.rotation.y = Math.PI / 2; this.whSign.visible = false;   // 선반 위 동쪽을 향해 고정
+    this.whSign.children.forEach((m) => { m.material.depthTest = false; m.renderOrder = 10; });   // 경보 표지는 현황판에 가리지 않게 늘 위에 그린다 (스프라이트일 때와 같음)
+    const COLS = [{ p: 'eaxle', key: 'parts', mat: std(0x6f5bd6) }, { p: 'doortrim', key: 'parts', mat: std(0xe08a2a) }, { p: 'eaxle', key: 'raw', mat: MAT.crate }, { p: 'doortrim', key: 'raw', mat: MAT.raw }];
+    const H = 5.1, bay = 0.85, colZ = (j) => WH_RACK.z - H + (j * 3 + 1.5) * bay;   // 열 j의 가운데 z (북 → 남)
+    this.buildMiniload(WH_RACK.z, 2 * H, 12, (i) => COLS[Math.floor(i / 3)],
+      MINILOAD_OUTS.wh,
+      [{ z: LOC.WH_IN.z, keys: ['raw'] }, { z: LOC.WH_PARTS_IN.z, keys: ['parts'] }]);
+    COLS.forEach((c, j) => { put(makeSignPlate(c.p === 'eaxle' ? 'e-axle' : '도어트림', c.p === 'eaxle' ? '#b89bff' : '#ffb35a', 1.5), WH_RACK.x + MINILOAD.half + 0.15, 6.0, colZ(j), r).rotation.y = Math.PI / 2; });   // 열 표지 (동쪽 면)
+    // 선반 앞 표지 — 선반 앞면(동쪽)에 고정해 화면을 돌려도 선반과 같이 돈다
+    put(makeSignPlate('원자재', '#c9d2dc', 2.2), WH_RACK.x + MINILOAD.half + 0.15, 6.5, WH_RACK.z + 2.5, r).rotation.y = Math.PI / 2;
+    put(makeSignPlate('부품', '#5aa9ff', 2.2), WH_RACK.x + MINILOAD.half + 0.15, 6.5, WH_RACK.z - 2.5, r).rotation.y = Math.PI / 2;
+    this.whRack = { rack: this.miniloads[0].g };
+    // 물류 선반 재고 현황판 (선반 위 왼쪽 벽, 동쪽을 향함): 재고 막대 · 입고 순환 상태 · 입출고 횟수
+    const sc = document.createElement('canvas'); sc.width = 1536; sc.height = 420;
+    this.whBoard = { cv: sc, tex: new THREE.CanvasTexture(sc), key: '' }; this.whBoard.tex.colorSpace = THREE.SRGBColorSpace; this.whBoard.tex.anisotropy = 8;
+    const bd = put(new THREE.Group(), INBOUND.wallX + 0.3, 6.25, WH_RACK.z, r); bd.rotation.y = Math.PI / 2;
+    put(box(10.4, 2.95, 0.12, std(0x0b0d10, { roughness: 0.5, metalness: 0.4 })), 0, 0, -0.07, bd);
+    put(new THREE.Mesh(new THREE.PlaneGeometry(10, 2.73), new THREE.MeshBasicMaterial({ map: this.whBoard.tex, toneMapped: false })), 0, 0, 0, bd);
+    bd.traverse((o) => (o.castShadow = false));   // 왼쪽 벽에 붙은 재고 현황판도 그림자 없음
+    this.buildXRack();
+    // 드론 이착륙·충전 패드 (피지컬AI 단계에서만 보임)
+    // 드론마다 이착륙·충전 패드 (H1·H2·H3…, 사족보행 충전 스테이션 바로 아래 세로 한 줄) — 운용 대수만큼 보인다. 무선 충전기는 서쪽
+    // 확장 Zone 드론 이착륙장도 같은 모양 (A-1 위쪽 · A-2 아래쪽 로봇 스테이션 — zonedefs.js ZONE_FAC.pads) · 그 Zone 드론이 운용 중일 때만 보인다
+    const padList = [...[0, 1, 2, 3].map((i) => ({ i, zone: null, p: dronePad(i) })), ...[...Object.entries(ZONE_FAC), ['insp', INSP_FAC]].flatMap(([zone, F]) => F.pads.map((p, i) => ({ i, zone, p })))];
+    this.dronePads = padList.map(({ i, zone, p }) => {
+      const g = put(new THREE.Group(), p.x, 0, p.z, r); g.userData.pad = { i, zone };
+      const padC = document.createElement('canvas'); padC.width = padC.height = 256;
+      const pc = padC.getContext('2d'); pc.fillStyle = '#1d2a3a'; pc.beginPath(); pc.arc(128, 128, 124, 0, Math.PI * 2); pc.fill();
+      pc.strokeStyle = '#37e8ff'; pc.lineWidth = 10; pc.beginPath(); pc.arc(128, 128, 110, 0, Math.PI * 2); pc.stroke();
+      pc.fillStyle = '#ffffff'; pc.font = '900 120px sans-serif'; pc.textAlign = 'center'; pc.textBaseline = 'middle'; pc.fillText(`H${i + 1}`, 128, 136);
+      const padTex = new THREE.CanvasTexture(padC); padTex.colorSpace = THREE.SRGBColorSpace;
+      const pad = put(new THREE.Mesh(new THREE.CircleGeometry(DRONE_PAD.r, 40), new THREE.MeshStandardMaterial({ map: padTex, roughness: 0.7 })), 0, 0.02, 0, g); pad.rotation.x = -Math.PI / 2;
+      put(box(0.5, 0.25, 0.3, MAT.dark), -(DRONE_PAD.r + 0.35), 0.125, 0, g);   // 무선 충전기
+      g.visible = false; return g;
+    });
+    // 충전소
+    this.chargers = [];
+    for (let i = 0; i < 4; i++) {
+      const L = chgLoc(i);
+      const pad = put(new THREE.Mesh(new THREE.PlaneGeometry(2.0, 2.4), std(0x2b4a3a)), L.x, 0.012, L.z, r); pad.rotation.x = -Math.PI / 2;
+      const post = put(box(0.4, 1.3, 0.3, MAT.white), L.x, 0.65, L.post, r);   // 충전 기둥: 통로 반대쪽
+      const m = emis(0x3dff8a, 1.5);
+      put(box(0.25, 0.25, 0.02, m, false), 0, 0.3, -0.16, post);
+      this.chargers.push({ group: pad, post, m });
+    }
+    // 정비실
+    // 정비실: 왼쪽 확장동 AMR 스테이션 옆, 출입구가 왼쪽 세로 통로(동쪽)를 보게 돌려 둔다 — 로컬 x −2.5 ~ +5.1 (zonedefs.js TECH_ROOM · sim.js techAt과 같은 자리·회전)
+    // Zone마다 하나씩: 정밀조립 · A-1 유연생산(위쪽 뒷벽 앞) · A-2 적응가공(아래쪽 건물 앞면 앞) — zonedefs.js TECH_ROOMS
+    this.techRooms = Object.values(TECH_ROOMS).map((R) => {
+      const g = put(new THREE.Group(), R.x, 0, R.z, r); g.rotation.y = R.rot;
+      put(box(7.6, 0.02, 3.5, std(0x6b4a2a)), 1.3, 0.01, -1.5, g);
+      return { R, g, furn: put(new THREE.Group(), 0, 0, 0, g) };   // 비품 (Blender 모델은 앱 시작 후 불러오므로 setup마다 다시 채움)
+    });
+    this.tech = this.techRooms[0].g;
+    this.buildTechFurniture();
+    // 정비실 바닥 표시 (단계별 문구: 레거시·자동화 — 정비원, 피지컬AI — 정비 휴머노이드) + 뒤쪽 표지판
+    const textTex = (lines, w, h, { bg, fg, sub, border }) => {
+      const c = document.createElement('canvas'); c.width = 1024; c.height = Math.round(1024 * h / w);
+      const x = c.getContext('2d'), F = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
+      if (bg) { x.fillStyle = bg; x.fillRect(0, 0, c.width, c.height); }
+      if (border) { x.strokeStyle = border; x.lineWidth = c.height * 0.06; x.strokeRect(c.height * 0.04, c.height * 0.04, c.width - c.height * 0.08, c.height - c.height * 0.08); }
+      x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillStyle = fg; x.font = `900 ${c.height * 0.38}px ${F}`; x.fillText(lines[0], c.width / 2, c.height * (lines[1] ? 0.4 : 0.52));
+      if (lines[1]) { let fs = c.height * 0.2; x.font = `700 ${fs}px ${F}`; while (x.measureText(lines[1]).width > c.width * 0.88) { fs *= 0.94; x.font = `700 ${fs}px ${F}`; } x.fillStyle = sub; x.fillText(lines[1], c.width / 2, c.height * 0.76); }
+      const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+    };
+    this.techMarks = { human: [], humanoid: [] };
+    for (const { R, g } of this.techRooms) for (const [k, sub] of [['human', '정비원 대기 · 고장 수리 · 예지정비'], ['humanoid', '정비 휴머노이드 대기 · 고장 수리 · 예지정비']]) {
+      const m = put(new THREE.Mesh(new THREE.PlaneGeometry(3.4, 1.0), new THREE.MeshBasicMaterial({ map: textTex([`🔧 ${R.label}`, sub], 3.4, 1.0, { fg: 'rgba(255,255,255,0.92)', sub: 'rgba(255,214,140,0.95)', border: 'rgba(242,194,48,0.9)' }), transparent: true, depthWrite: false })), 1.3, 0.03, -1.5, g);   // 정비실 구역 정중앙
+      m.rotation.x = -Math.PI / 2; m.rotation.z = -R.rot; m.visible = false; this.techMarks[k].push(m);   // 바닥 글씨는 정비실을 돌려도 건물 앞쪽에서 바로 읽히게
+    }
+    // 관제/서버
+    // 정밀조립 데이터 서버 랙: 왼쪽 벽(x −51) 앞, 로봇 디스플레이 아래(z −29) — 벽을 등지고 건물 안(+x)을 본다. AMR 대기열·출동 차로(z −23 ~ 0)보다 뒤쪽
+    const srv = (this.server = put(new THREE.Group(), SRV.x, 0, SRV.z, r)); srv.rotation.y = Math.PI / 2;
+    this.serverLeds = [];
+    for (const x of [-1.6, -0.5, 0.6, 1.7]) {
+      const rk = put(box(0.9, 2.3, 1.0, MAT.dark), x, 1.15, 0, srv);
+      for (let k = 0; k < 6; k++) {
+        const m = emis(k % 2 ? 0x3dff8a : 0x2aa8ff, 2);
+        this.serverLeds.push(m);
+        put(box(0.6, 0.04, 0.02, m, false), 0, -0.8 + k * 0.32, 0.51, rk);
+      }
+    }
+    this.serverPos = new THREE.Vector3(SRV.x + 0.5, 2.6, SRV.z);
+    // 로고 표시는 서버 랙 묶음과 따로 둔다 — 레거시 단계는 관제 서버를 숨기지만 로고는 모든 단계에 보인다
+    const brand = put(new THREE.Group(), SRV.x, 0, SRV.z, r); brand.rotation.y = Math.PI / 2;
+    // 서버 랙 양옆 로고 스탠드(랙과 같은 줄, 관제 화면 아래) — 건물 안에서 벽을 보았을 때 왼쪽(앞 +z) 과학기술정보통신부 · 오른쪽(뒤 −z) 정보통신산업진흥원
+    // 흰 바탕이 블룸으로 번지지 않도록 회백색으로 낮춰 표시한다
+    for (const [x, file] of [[-3.25, 'assets/msit_logo.png'], [3.25, 'assets/nipa_logo.png']]) {
+      const tex = new THREE.TextureLoader().load(file); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+      const frame = std(0x14181e, { roughness: 0.6, metalness: 0.3 });
+      put(box(1.9, 1.45, 0.08, frame), x, 1.55, 0, brand);
+      for (const sd of [-1, 1]) put(box(0.08, 0.85, 0.08, frame), x + sd * 0.7, 0.42, 0, brand);
+      put(box(1.7, 0.04, 0.5, frame), x, 0.02, 0, brand);
+      put(new THREE.Mesh(new THREE.PlaneGeometry(1.76, 1.32), new THREE.MeshBasicMaterial({ map: tex, color: 0xb4b8be })), x, 1.55, 0.045, brand);
+    }
+    // 디지털 트윈 대형 화면
+    const c = document.createElement('canvas'); c.width = 2016; c.height = 448;   // 18×4m (4.5:1)
+    this.screenCanvas = c;
+    this.screenTex = new THREE.CanvasTexture(c); this.screenTex.colorSpace = THREE.SRGBColorSpace;
+    const scrMat = new THREE.MeshBasicMaterial({ map: this.screenTex, toneMapped: false });
+    // 18×4m: 높이는 양옆 CCTV 전광판·로봇 디스플레이(12×4m)와 같고 폭만 1.5배
+    // 정밀조립 화면은 왼쪽 벽(x −51) 안쪽에 건물 안(+x)을 보고 한 줄로 (zonedefs.js LEFT_WALL): 로봇 디스플레이 → 관제 화면 → CCTV 전광판, 간격 0.5m
+    this.screen = put(new THREE.Mesh(new THREE.PlaneGeometry(18, 4), scrMat), LEFT_WALL.x, 5.1, LEFT_WALL.ctrlZ, r); this.screen.rotation.y = Math.PI / 2;
+    put(new THREE.Mesh(new THREE.BoxGeometry(18.3, 4.3, 0.12), std(0x14181e, { roughness: 0.6, metalness: 0.3 })), 0, 0, -0.08, this.screen);
+  }
+
+  // 모드별 설비/인원/조명 구성
+  setup(sim, labelsOn = true, changed = null) {
+    this.buildWhStock(); this.buildTechFurniture();
+    this.sim = sim;
+    const mode = sim.mode.key;
+    // CSS2DRenderer는 씬에서 제거된 라벨의 DOM을 지우지 않으므로 직접 제거
+    for (const v of [...this.stationViews, ...(this.vehicleViews ?? []), ...(this.techViews ?? []), ...(this.helperViews ?? []), ...(this.quadViews ?? []), ...(this.droneViews ?? []), ...(this.truckViews?.values() ?? [])]) {
+      const l = v.label ?? v.lbl; l.removeFromParent(); l.element.remove();
+    }
+    this.truckViews = new Map(); this.labelsOn = labelsOn; this.idPlates = [];
+    for (const sv of this.stationViews) { this.root.remove(sv.group); if (sv.alarm) this.root.remove(sv.alarm); }
+    for (const c of this.convGroups ?? []) this.root.remove(c);
+    if (this.zoneDeco) { this.root.remove(this.zoneDeco); this.zoneDeco = null; }
+    this.dyn.clear();
+    this.itemMeshes.clear(); this.itemPool = []; this.flyers = []; this.packets = [];
+    this.stationViews = []; this.conveyorTex = []; this.convGroups = [];
+    while (this.iot.children.length) this.iot.remove(this.iot.children[0]);
+
+    for (const st of [...sim.stations, ...sim.standby]) {
+      const g = new THREE.Group(); g.position.set(st.x, 0, st.z); g.rotation.y = st.rot;
+      g.scale.z = st.def.side ?? 1;
+      st.zoneLine = sim.zone;   // 정밀조립Zone 배치 표시 (st.zone은 시뮬레이션의 Zone 키라 덮어쓰지 않는다 — 덮어쓰면 정밀조립 셀이 자기 정비 인력을 못 받는다)
+      st.vla = mode === 'dark';   // 피지컬AI: 카메라 기반 VLA로 선반에서 부품을 집어 조립·체결
+      if (sim.useAMR) cellBase(g, st.type === 'source' || st.type === 'sink' ? 3.6 : 4.6);
+      else this.conveyorTex.push(stationBase(g, st.type === 'source' || st.type === 'sink' ? 3.6 : 4.2).map);
+      const parts = BUILDERS[st.type](g, st, sim);
+      const { group: robotGroup, robots, racks } = placeRobots(g, st);
+      parts.robots = robots; parts.racks = racks;
+      // 셀 로봇 고유 ID 명판 (로봇 위, 라벨 버튼으로 켜고 끔)
+      robots.forEach((rb, i) => { const uid = st.robotUids?.[i]; if (!uid) return; const sp = idPlate(uid); sp.position.set(0, rb.kind === 'ammr' ? 2.55 : 2.35, 0); rb.root.add(sp); this.idPlates.push(sp); sp.visible = labelsOn; });
+      if (parts.arms) Object.values(parts.arms).forEach((A, i) => { const uid = sim.sinkRobotUids?.[i]; if (!uid) return; const sp = idPlate(uid); sp.position.set(0, 3.3, 0); A.arm.root.add(sp); this.idPlates.push(sp); sp.visible = labelsOn; });
+      const vlaCell = st.vla && parts.robots?.some((r) => r.vla);
+      if (vlaCell) for (const f of parts.feeders ?? []) f.visible = false;   // 로봇별 부품 선반으로 대체
+      const light = vlaCell ? put(makeStackLight(), 0.1, 0.15, -2.1, g) : put(makeStackLight(), -1.9, 0.15, -1.6, g);
+      g.traverse((o) => { o.userData.stationId = st.id; });
+      g.userData.stationId = st.id;
+      const autoVisible = mode !== 'traditional';
+      robotGroup.visible = autoVisible;
+      if (parts.auto) parts.auto.visible = autoVisible;
+      if (parts.manual) parts.manual.visible = !autoVisible;
+      if (parts.manualProps) parts.manualProps.forEach((p) => (p.visible = !autoVisible));
+      // 라벨
+      const el = document.createElement('div');
+      el.className = 'st-label';
+      const rb = st.def.robot?.count ? `${ROBOT_KINDS[st.def.robot.kind].short}×${st.def.robot.count}` : '';
+      const cell = ZONE_CELLS[st.id.split('@')[0]];
+      const use = cell && st.type !== 'source' && st.type !== 'sink' ? `<div class="use u-${cellUse(st.id.split('@')[0])}">${cell.use}</div>` : '';
+      el.innerHTML = `<div class="nm">${cell && use ? `<b class="no">${cell.no}</b>` : ''}<span></span>${st.uid ? `<i class="uid">${st.uid}</i>` : ''}</div>${use}<div class="row"><span class="chip"></span><span class="hp"><i></i></span></div>${rb && mode !== 'traditional' ? `<div class="rb">🤖 ${rb}</div>` : ''}${(st.type === 'sort' || st.type === 'pack') && this.sim.zone ? '<div class="gd"></div>' : ''}`;
+      el.classList.toggle('changed', !!changed?.has(st.id));
+      el.classList.toggle('standby', !!st.standby);
+      const label = new CSS2DObject(el); label.position.set(0, 4.3, 0); g.add(label);
+      label.visible = labelsOn;
+      // IoT 노드
+      const sensorMat = emis(0x37e8ff, 2.5);
+      const sp = toWorld(st.def, 1.7, -1.4);
+      const sensor = put(mesh(new THREE.SphereGeometry(0.12, 12, 10), sensorMat, false), sp.x, 3.2, sp.z, this.iot);
+      const ringM = new THREE.MeshBasicMaterial({ color: 0x37e8ff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
+      const pulse = put(new THREE.Mesh(new THREE.RingGeometry(0.2, 0.26, 24), ringM), sp.x, 3.2, sp.z, this.iot);
+      pulse.lookAt(sp.x, 10, sp.z);
+      this.root.add(g);
+      // 설비 고장(·투입구는 공급 차질) 경보 — 셀 바닥 크기에 맞춘 테두리와 경광등
+      const alarm = makeAlarmFx(st.type === 'source' || st.type === 'sink' ? 4.2 : 5.4, 5.4, 4.6);
+      this.root.add(alarm); alarm.position.set(st.x, 0, st.z);
+      this.stationViews.push({ st, group: g, parts, light, label, el, sensor, pulse, ringM, sensorMat, alarm, phase: Math.random() * 6 });
+    }
+    if (isZone(sim.line)) this.buildZoneDeco(sim);
+    this.iot.visible = mode !== 'traditional';
+    this.server.visible = mode !== 'traditional';
+    for (const f of this.facadeSigns) f.visible = mode === 'dark';   // 외벽 "피지컬AI 실증 메타팩토리" 사인은 피지컬AI 단계에서만
+    this.screen.visible = mode !== 'traditional';
+    this.buildLogistics(sim);
+    this.buildCCTV(sim);
+    this.build5G(sim);
+    this.cctvG.traverse((o) => (o.castShadow = false));   // 천장 CCTV(카메라·지지대)는 바닥에 그림자를 드리우지 않는다
+    for (const m of this.techMarks.human) m.visible = sim.mode.techKind !== 'humanoid'; for (const m of this.techMarks.humanoid) m.visible = sim.mode.techKind === 'humanoid';
+
+    // 컨베이어 (경로를 따라 직선 구간별로 생성, 코너는 겹쳐서 이음). 미사용 분기는 멈춘 채 어둡게
+    const idle = sim.idleLinks.map((l) => ({ from: l.from, to: l.to, path: l.path, idle: true }));
+    for (const c of [...sim.conveyors, ...idle]) {
+      if (sim.useAMR) { this.buildGuide(c); continue; }
+      const startTrim = c.from.type === 'source' ? 1.8 : 2.1, endTrim = c.to.type === 'sink' ? -0.2 : 0.1;
+      const pts = trimPath(c.path, startTrim, endTrim);
+      const g = new THREE.Group();
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        const dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz);
+        if (L < 0.05) continue;
+        const ext0 = i > 1 ? 0.5 : 0, ext1 = i < pts.length - 1 ? 0.5 : 0;
+        const len = L + ext0 + ext1;
+        const seg = new THREE.Group();
+        const mid = (L + ext1 - ext0) / 2;
+        seg.position.set(a.x + (dx / L) * mid, 0, a.z + (dz / L) * mid);
+        seg.rotation.y = Math.atan2(-dz, dx);
+        const tex = BELT_TEX.clone(); tex.repeat.set(len / 0.5, 1); tex.needsUpdate = true;
+        const beltMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8, color: c.idle ? 0x777777 : 0xffffff });
+        put(box(len, 0.1, 1.0, [MAT.dark, MAT.dark, beltMat, MAT.dark, MAT.dark, MAT.dark]), 0, BELT_Y - 0.05, 0, seg);
+        for (const sd of [-1, 1]) put(box(len, 0.12, 0.08, MAT.steel), 0, BELT_Y + 0.02, sd * 0.56, seg);
+        for (let x = -len / 2 + 0.4; x <= len / 2 - 0.3; x += 1.6) for (const sd of [-1, 1]) put(box(0.08, BELT_Y - 0.1, 0.08, MAT.dark), x, (BELT_Y - 0.1) / 2, sd * 0.45, seg);
+        if (!c.idle) this.conveyorTex.push(tex);
+        g.add(seg);
+      }
+      this.root.add(g); this.convGroups.push(g);
+    }
+    // 차량
+    this.vehicleViews = [...sim.vehicles, ...(sim.forklifts ?? [])].map((v) => {
+      const g = v.kind === 'agv' ? makeAGV() : makeForklift();
+      if (v.auto) { g.userData.driver.visible = false; g.userData.beacon.visible = true; }   // 자율 지게차: 운전자 없음
+      g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      const el = document.createElement('div'); el.className = 'v-label';
+      const lbl = new CSS2DObject(el); lbl.position.set(0, v.kind === 'agv' ? 1.6 : 2.8, 0); g.add(lbl);
+      lbl.visible = labelsOn;
+      this.dyn.add(g);
+      return { v, g, el, lbl, yaw: v.heading };
+    });
+    this.carrierViews = sim.carriers.map((c) => {
+      const g = makeCarrierAMR();
+      this.dyn.add(g);
+      return { v: c, g, yaw: c.heading };
+    });
+    this.techViews = sim.techs.map((t) => {
+      const g = t.kind === 'robot' ? makeMaintBot() : t.kind === 'humanoid' ? makeHumanoid(0xff8a2a) : makeWorker(0xff6a00, std(0xff6a00, { emissive: 0x331100 }));
+      const el = document.createElement('div'); el.className = 'v-label tech';
+      const lbl = new CSS2DObject(el); lbl.position.set(0, t.kind === 'robot' ? 1.4 : 2.4, 0); g.add(lbl);
+      lbl.visible = labelsOn;
+      this.dyn.add(g);
+      return { v: t, g, el, lbl, yaw: t.heading, px: t.x, pz: t.z };
+    });
+    // 무인공장: 부품 보충 휴머노이드(파랑)·사족보행 순찰 로봇
+    const robotView = (v, g, h, cls) => {
+      const el = document.createElement('div'); el.className = `v-label ${cls}`;
+      const lbl = new CSS2DObject(el); lbl.position.set(0, h, 0); g.add(lbl);
+      lbl.visible = labelsOn;
+      this.dyn.add(g);
+      return { v, g, el, lbl, yaw: v.heading, px: v.x, pz: v.z };
+    };
+    this.helperViews = sim.helpers.map((h) => robotView(h, makeHumanoid(0x2aa8ff), 2.4, 'helper'));
+    // 휴머노이드 충전 도크: 정비 휴머노이드·물류 휴머노이드 대기 자리마다 (등 쪽 = 대기 방향의 반대)
+    this.humanoidDocks = [...sim.techs, ...sim.helpers].filter((m) => m.kind === 'humanoid' && m.home).map((m) => {
+      const d = makeHumanoidDock(); d.position.set(m.home.x, 0, m.home.z); d.rotation.y = m.home.heading ?? 0; this.dyn.add(d);
+      return { d, m };
+    });
+    this.quadViews = sim.quads.map((q) => robotView(q, makeQuadruped(), 1.5, 'quad'));
+    this.droneViews = (sim.drones ?? []).map((d) => robotView(d, makeDrone(), 0.7, 'drone'));
+    this.dronePads.forEach((g) => { const P = g.userData.pad; g.visible = (sim.drones ?? []).some((d) => (d.zone ?? null) === P.zone && d.idx === P.i); });
+    this.workerViews = sim.workers.map((w) => {
+      const hat = { 반장: 0xffffff, 모니터링: 0x2aa8ff, 관제: 0x2aa8ff, 검사원: 0x9b59b6 }[w.role] ?? 0xf2c230;
+      const g = makeWorker(hat, w.role === '모니터링' || w.role === '관제' ? std(0x2a6fdb) : MAT.hiVis);
+      this.dyn.add(g);
+      return { v: w, g, yaw: w.heading, px: w.x, pz: w.z };
+    });
+    // 클릭으로 로봇을 고를 수 있게 이동 로봇 모델에 ID 표시 (사람은 제외)
+    for (const vv of [...this.vehicleViews, ...this.carrierViews, ...this.techViews, ...this.helperViews, ...this.quadViews, ...this.droneViews]) {
+      if (vv.v.kind === 'human') continue;
+      vv.g.traverse((o) => { o.userData.moverId = vv.v.id; });
+    }
+    this.telemetry = null;
+    this.robotLogs = new Map();   // 로봇별 정밀 기록 (새 실행마다 초기화)
+    if (!this.selRing) {
+      this.selRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1.05, 40), new THREE.MeshBasicMaterial({ color: 0x37e8ff, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }));
+      this.selRing.rotation.x = -Math.PI / 2; this.scene.add(this.selRing);
+    }
+    this.selRing.visible = false;
+    this.labelsVisible = labelsOn;
+  }
+
+  // 클릭한 메시 → 선택 대상 (셀 로봇·이동 로봇·라인 위 AMR·설비)
+  pick(hits) {
+    for (const h of hits) {
+      let o = h.object;
+      while (o) {
+        const u = o.userData;
+        if (u.robotIdx != null && u.stationId) return { type: 'cell', stationId: u.stationId, idx: u.robotIdx };
+        if (u.moverId) return { type: 'mover', id: u.moverId };
+        if (u.cctvId) return { type: 'cctv', id: u.cctvId };
+        if (u.gnbId) return { type: 'gnb', id: u.gnbId };
+        if (u.itemId != null) {
+          const it = [...this.sim.conveyors.flatMap((c) => c.items.map((e) => e.item)), ...this.sim.processing.map((st) => st.item)].find((x) => x?.id === u.itemId);
+          if (it?.carrier) return { type: 'mover', id: it.carrier.id };
+        }
+        if (u.stationId && !o.parent?.userData.stationId) return { type: 'station', id: u.stationId };
+        if (u.zoneCell) return { type: 'zcell', ...u.zoneCell };   // 확장 Zone 셀 (설비)
+        o = o.parent;
+      }
+    }
+    return null;
+  }
+  pickTargets() {
+    return [...this.stationViews.map((s) => s.group), this.dyn, ...(this.xzones ? [this.xzones.root] : []), ...(this.cctvG ? [this.cctvG] : []), ...(this.netG?.visible ? [this.netG] : [])];
+  }
+  // 셀 로봇 찾기: 정밀조립 셀(stationViews) → 확장 Zone 셀(zones.js) — { robot, st }
+  cellRobot(stationId, idx) {
+    const sv = this.stationViews.find((s) => s.st.id === stationId);
+    if (sv) { const r = sv.parts.robots?.[idx] ?? Object.values(sv.parts.arms ?? {})[idx]?.arm; return r ? { robot: r, st: sv.st } : null; }
+    return this.xzones?.cellRobot(stationId, idx) ?? null;
+  }
+  selectRobot(ref) {
+    this.telemetry = ref ? new RobotTelemetry(this, ref) : null;
+    this.selRing.visible = !!ref;
+  }
+
+  // AMR 유도 경로 (바닥 테이프): 셀 중앙 → 다음 셀 중앙. 미사용 분기는 회색
+  buildGuide(c) {
+    const g = new THREE.Group();
+    const mat = c.idle ? new THREE.MeshBasicMaterial({ color: 0x5b6670 }) : new THREE.MeshBasicMaterial({ color: 0x37e8ff, transparent: true, opacity: 0.8 });
+    const pts = trimPath(c.path, c.from.type === 'source' ? 1.8 : 2.3, -2.3 + 2);
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i], dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz);
+      if (L < 0.05) continue;
+      const seg = put(new THREE.Group(), (a.x + b.x) / 2, 0, (a.z + b.z) / 2, g);
+      seg.rotation.y = Math.atan2(-dz, dx);
+      for (const sd of [-0.5, 0.5]) { const m = put(new THREE.Mesh(new THREE.PlaneGeometry(L + 0.1, 0.07), mat), 0, 0.016, sd, seg); m.rotation.x = -Math.PI / 2; }
+      if (!c.idle) for (let x = -L / 2 + 0.6; x < L / 2 - 0.3; x += 1.6) {
+        const ch = put(new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), mat), x, 0.016, 0, seg);   // 진행 방향 표시
+        ch.rotation.x = -Math.PI / 2; ch.rotation.z = Math.PI / 4; ch.scale.set(1, 0.35, 1);
+      }
+    }
+    this.root.add(g); this.convGroups.push(g);
+  }
+
+  // 정밀조립Zone 바닥 표시: Zone 경계선, 셀별 패드(공동·공용/도어트림/e-axle 색), Zone 이름
+  buildZoneDeco(sim) {
+    const g = (this.zoneDeco = new THREE.Group()); this.root.add(g);
+    const flat = (w, d, mat, x, z, y = 0.008) => { const m = put(new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat), x, y, z, g); m.rotation.x = -Math.PI / 2; m.receiveShadow = true; return m; };
+    const edge = new THREE.MeshBasicMaterial({ color: 0x37e8ff, transparent: true, opacity: 0.55 });
+    const X0 = ZONE_SRC.x - 3, X1 = ZONE_SINK.x + 3.5, Z0 = -7.3, Z1 = 7.3;   // 투입 스테이션 ~ 구분 적재장 (line.js 셀 배치)
+    for (let x = X0; x < X1; x += 1.6) for (const z of [Z0, Z1]) flat(Math.min(1.0, X1 - x), 0.12, edge, x + 0.5, z, 0.012);
+    for (let z = Z0; z < Z1; z += 1.6) for (const x of [X0, X1]) flat(0.12, Math.min(1.0, Z1 - z), edge, x, z + 0.5, 0.012);
+    for (const [id, cell] of Object.entries(ZONE_CELLS)) {
+      const col = ZONE_COLOR[cellUse(id)];
+      flat(5.0, 4.6, new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: 0.3, roughness: 0.9, depthWrite: false }), cell.x, cell.z, 0.01);
+    }
+    const decal = (text, color, w, x, z, size = 64) => {
+      const c = document.createElement('canvas'); c.width = 1024; c.height = 128;
+      const g2 = c.getContext('2d');
+      g2.fillStyle = color; g2.font = `bold ${size}px sans-serif`; g2.textBaseline = 'middle';
+      g2.fillText(text, 12, 64);
+      const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+      return flat(w, w / 8, new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }), x, z, 0.014);
+    };
+    const mix = ZONE_MIXES[sim.line.mix] ?? ZONE_MIXES['1:1'];
+    decal(`${ZONE_NAME} · 혼류 ${mix.label}`, 'rgba(55,232,255,0.9)', 16, -20.5, -5.6);
+    decal('▶ 도어트림 라인', 'rgba(245,189,92,0.95)', 12, 1, 1.6, 56);
+    decal('▶ e-axle 라인', 'rgba(184,155,255,0.95)', 12, 1, -1.6, 56);
+    if (!sim.useAMR) return;
+    // AMR 전용 동선 (왼쪽 확장동 위쪽 AMR 스테이션): 대기열(남북 한 줄), 복귀 전용로(적재장 → 뒤 통로 뒤 → 대기열 동쪽 복귀 차로), 출동 차로(대기열 서쪽 → 남쪽 끝 → 동쪽 투입 스테이션)
+    const p0 = amrPark(0), pN = amrPark(ZONE_AMR.count - 1);
+    const { ret, retX, dockX, parkX, retLaneX, outX } = AMR_LANES;
+    flat(1.9, p0.z - pN.z + 1.4, new THREE.MeshStandardMaterial({ color: 0x2bb3a6, transparent: true, opacity: 0.22, depthWrite: false }), parkX, (p0.z + pN.z) / 2, 0.01);
+    decal('AMR 대기열', 'rgba(127,224,214,0.95)', 5, parkX, pN.z - 1.6, 64);
+    const tape = new THREE.MeshBasicMaterial({ color: 0x7fe0d6, transparent: true, opacity: 0.7 });
+    const dash = (ax, az, bx, bz) => {
+      const L = Math.hypot(bx - ax, bz - az), n = Math.floor(L / 1.2);
+      for (let i = 0; i < n; i++) {
+        const k = (i + 0.5) / n, m = flat(0.7, 0.1, tape, ax + (bx - ax) * k, az + (bz - az) * k, 0.016);
+        m.rotation.z = Math.atan2(bz - az, bx - ax) * -1;
+      }
+    };
+    dash(retX, -2.4, retX, ret); dash(retX, ret, retLaneX, ret); dash(retLaneX, pN.z, retLaneX, p0.z);
+    dash(outX, pN.z, outX, 0); dash(outX, 0, dockX - 0.6, 0);
+    decal('◀ AMR 복귀 전용로', 'rgba(127,224,214,0.9)', 8, 8, ret, 56);
+    decal('AMR 출동 차로 ▶', 'rgba(127,224,214,0.9)', 7, -40.6, 1.1, 56);
+  }
+
+  setLabels(on) {
+    this.labelsVisible = on;
+    for (const sv of this.stationViews) sv.label.visible = on;
+    for (const vv of [...(this.vehicleViews ?? []), ...(this.techViews ?? []), ...(this.helperViews ?? []), ...(this.quadViews ?? []), ...(this.droneViews ?? []), ...(this.truckViews?.values() ?? [])]) vv.lbl.visible = on;
+    this.labelsOn = on;
+    for (const sp of this.idPlates ?? []) sp.visible = on;
+  }
+
+  // ── 제품 메시 ─────────────────────────────
+  getItemMesh() {
+    let g = this.itemPool.pop();
+    if (!g) {
+      g = new THREE.Group();
+      const base = put(box(0.62, 0.36, 0.55, MAT.raw), 0, 0.18, 0, g);
+      const part = put(cyl(0.13, 0.13, 0.3, MAT.copper, 14), 0, 0.5, 0, g);
+      const carton = put(box(0.8, 0.6, 0.72, MAT.carton), 0, 0.3, 0, g);
+      const tag = put(box(0.3, 0.02, 0.2, emis(0x3dff8a, 1.5), false), 0, 0.62, 0, g);
+      // 도어트림: 트림 패널 + 암레스트 + 압입 클립 / e-axle: 모터·감속기 하우징 + 체결 볼트
+      const panel = put(box(0.95, 0.08, 0.62, MAT.trim), 0, 0.41, 0, g);
+      const arm = put(box(0.5, 0.1, 0.16, MAT.trimSoft), 0.1, 0.5, 0.12, g);
+      const clips = put(new THREE.Group(), 0, 0.46, 0, g);
+      for (const [cx, cz] of [[-0.38, -0.24], [0.38, -0.24], [-0.38, 0.24], [0.38, 0.24]]) put(box(0.07, 0.04, 0.07, MAT.clip, false), cx, 0, cz, clips);
+      const housing = put(cyl(0.27, 0.27, 0.62, MAT.housing, 18), 0, 0.64, 0, g);
+      housing.rotation.z = Math.PI / 2;
+      const bolts = put(new THREE.Group(), 0.33, 0.64, 0, g);
+      put(cyl(0.3, 0.3, 0.05, MAT.housing, 18), 0, 0, 0, bolts).rotation.z = Math.PI / 2;
+      for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; put(cyl(0.035, 0.035, 0.06, MAT.bolt, 6), 0.03, Math.cos(a) * 0.22, Math.sin(a) * 0.22, bolts).rotation.z = Math.PI / 2; }
+      const amr = makeCarrierAMR(); amr.position.y = -BELT_Y; amr.rotation.y = Math.PI / 2; g.add(amr);
+      const dtImg = makeDoortrimPlate(); g.add(dtImg);   // 도어트림 실물 이미지 판 (부품분류셀부터)
+      const eaImg = makeEaxlePlate(); g.add(eaImg);      // e-axle: Blender 입체 모델 (불러오지 못하면 실물 이미지 판) — 부품분류셀부터
+      g.userData = { base, part, carton, tag, panel, arm, clips, housing, bolts, amr, dtImg, eaImg };
+      this.dyn.add(g);
+    }
+    g.visible = true;
+    return g;
+  }
+  styleItem(g, item, inSort = false) {
+    const { base, part, carton, tag, panel, arm, clips, housing, bolts, amr, dtImg, eaImg } = g.userData;
+    amr.visible = !!item.carrier;
+    const dt = item.product === 'doortrim', ea = item.product === 'eaxle';
+    dtImg.visible = false; eaImg.visible = false; clips.position.y = 0.46;
+    panel.visible = dt && !!item.assembled; arm.visible = dt && !!item.assembled; clips.visible = dt && !!item.pressed;
+    housing.visible = ea && !!item.assembled; bolts.visible = ea && !!item.fastened;
+    if (item.scrap) {   // 불량품을 빼낸 빈 AMR
+      panel.visible = arm.visible = clips.visible = housing.visible = bolts.visible = false;
+      part.visible = carton.visible = base.visible = tag.visible = false;
+      return;
+    }
+    if (item.product && item.packed) {
+      // 포장 완료: 도어트림 트레이 박스 / e-axle 크레이트 (색으로 구분)
+      panel.visible = arm.visible = clips.visible = housing.visible = bolts.visible = false;
+      part.visible = false; base.visible = false; carton.visible = true;
+      carton.material = dt ? MAT.carton : MAT.crate;
+      tag.visible = true; tag.position.y = 0.61;
+      return;
+    }
+    if (dt && (item.sorted || inSort || blenderOn())) {   // Blender: 자재투입존에서 집은 실물 그대로 처음부터
+      // 도어트림: 부품분류셀부터 박스 대신 실물 이미지 판 (조립·압입 후에도 같은 판, 압입 클립 표시)
+      carton.visible = false; part.visible = false; base.visible = false; panel.visible = false; arm.visible = false; dtImg.visible = true;
+      clips.position.y = 0.08;   // 압입 클립은 이미지 판 위에
+      tag.visible = !!item.inspected; tag.position.y = 0.12;
+      return;
+    }
+    if (ea && (item.sorted || inSort || blenderOn())) {
+      // e-axle: 부품분류셀부터 원통 하우징·박스 대신 실물 단면 이미지 판 (체결 후 양 끝 플랜지 볼트 표시)
+      carton.visible = false; part.visible = false; base.visible = false; housing.visible = false; bolts.visible = false; eaImg.visible = true;
+      eaImg.userData.bolts.visible = !!item.fastened;
+      tag.visible = !!item.inspected; tag.position.y = eaImg.userData.tagY ?? 0.2;
+      return;
+    }
+    if (item.product) {
+      carton.visible = false; part.visible = false; base.visible = true;
+      base.material = item.sorted ? MAT.tray : MAT.raw;
+      tag.visible = !!item.inspected;
+      tag.position.y = ea ? 0.93 : dt && item.assembled ? 0.57 : 0.37;
+      return;
+    }
+    carton.visible = !!item.packed; carton.material = MAT.carton;
+    base.visible = !item.packed;
+    part.visible = !!item.assembled && !item.packed;
+    tag.visible = !!item.inspected;
+    tag.position.y = item.packed ? 0.61 : 0.37;
+    base.material = item.painted ? MAT.painted : item.machined || item.assembled ? MAT.machined : MAT.raw;
+    part.material = item.painted ? MAT.painted : MAT.copper;
+  }
+
+  syncItems() {
+    const sim = this.sim, seen = new Set();
+    const place = (item, x, y = BELT_Y, z = 0, yaw = 0, inSort = false) => {
+      let g = this.itemMeshes.get(item.id);
+      if (!g) { g = this.getItemMesh(); this.itemMeshes.set(item.id, g); }
+      seen.add(item.id);
+      g.userData.itemId = item.id;
+      this.styleItem(g, item, inSort);
+      g.position.set(x, y, z);
+      g.rotation.y = yaw;
+    };
+    const sink = sim.stations[sim.stations.length - 1];
+    for (const c of sim.conveyors) for (const e of c.items) {
+      const q = pointAt(c.path, e.s), q2 = pointAt(c.path, Math.min(c.len, e.s + 0.3)), q0 = pointAt(c.path, Math.max(0, e.s - 0.3));
+      // 구분 적재장: 경로 끝(입구)에서 가운데 정지 구간까지 들어가는 중 (시뮬레이션 enterT) — 다 들어간 뒤 적재 로봇이 집는다
+      const k = e.item.enterT != null && sink.ins.includes(c) ? Math.min(1, e.item.enterT / SINK_PICK.enter) : 0, ke = k * k * (3 - 2 * k);
+      place(e.item, q.x + (sink.x - q.x) * ke, BELT_Y, q.z + (sink.z - q.z) * ke, Math.atan2(-(q2.z - q0.z), q2.x - q0.x));
+    }
+    for (const st of sim.processing) if (st.item) {
+      const k = sim.entryK(st);
+      const from = st.itemFrom ?? toWorld(st.def, -2, 0);   // 들어온 경로 끝점에서 셀 중앙으로
+      const q = { x: from.x + (st.x - from.x) * k, z: from.z + (st.z - from.z) * k };
+      let y = BELT_Y;
+      if (st.state === 'BUSY' && (st.type === 'cnc' || st.type === 'press')) y += Math.sin(this.time * 60) * 0.006;
+      place(st.item, q.x, y, q.z, 0, st.type === 'sort');
+    }
+    for (const [id, g] of this.itemMeshes) if (!seen.has(id)) { g.visible = false; this.itemPool.push(g); this.itemMeshes.delete(id); }
+  }
+
+  // ── 이벤트 연출 ─────────────────────────────
+  handleEvents() {
+    const ev = this.sim.events; this.sim.events = [];
+    for (const e of ev) {
+      if (e.type === 'reject') {
+        const g = this.getItemMesh(); this.styleItem(g, e.item); g.rotation.y = 0;
+        g.userData.base.material = MAT.defect;
+        const bin = toWorld(e.st.def, 1.4, -1.9);
+        g.position.set(e.st.x, BELT_Y, e.st.z);
+        this.flyers.push({ g, t: 0, from: new THREE.Vector3(e.st.x, BELT_Y, e.st.z), to: new THREE.Vector3(bin.x, 0.7, bin.z) });
+      }
+    }
+  }
+
+  // ── 프레임 갱신 ─────────────────────────────
+  update(rdt, simRunning, simSpeed) {
+    const sim = this.sim; if (!sim) return;
+    this.time += rdt;
+    const t = this.time, mode = sim.mode.key;
+    this.handleEvents();
+    this.syncItems();
+    this.updateNetLinks();
+    if (this.crawl && this.facadeSigns?.[1]?.visible) this.drawCrawl(rdt);
+    if (this.netLeds) { const on = Math.floor(t * 2) % 2 === 0; for (const l of this.netLeds) l.material.emissiveIntensity = on ? 2.4 : 1.2; }
+
+    // 컨베이어 벨트 스크롤
+    const beltMove = simRunning ? (1.1 * rdt * simSpeed) / 0.5 : 0;
+    for (const tex of this.conveyorTex) tex.offset.x = (tex.offset.x - beltMove) % 1;
+
+    const dts = simRunning ? rdt * simSpeed : 0;
+    for (const sv of this.stationViews) this.animateStation(sv, t, rdt, dts);
+    // 경보 깜빡임: 고장 설비(빨강), 공급 차질 시 자재창고·투입구(주황) — 해결되면 꺼진다
+    for (const sv of this.stationViews) {
+      const s0 = sv.st.state;
+      const kind = s0 === 'DOWN' || s0 === 'ESTOP' ? 'fault' : s0 === 'PSTOP' ? 'event' : sv.st.type === 'source' && sim.supplyAlarm ? 'supply' : null;
+      blinkAlarmFx(sv.alarm, !!kind, ALARM_COLOR[kind] ?? 0, t);
+      sv.el.classList.toggle('alarm-fault', kind === 'fault'); sv.el.classList.toggle('alarm-supply', kind === 'supply');
+    }
+    blinkAlarmFx(this.whAlarm, sim.supplyAlarm, ALARM_COLOR.supply, t);
+    // 출고 중단 동안 창고 랙은 비어 보이고 '출고 중단' 표지가 깜빡인다
+    const out = sim.supplyDisrupted;
+    // 미니로드 ①·②: 칸 채움(재고만큼) · 크레인 입출고 · 출고 컨베이어 → AGV 롤러 이재 (일시정지면 멈춤, 빠른 배속은 8배까지 따라간다)
+    for (const S of this.miniloads ?? []) { this.fillMiniload(S); this.animMiniload(S, Math.min(dts, rdt * 8)); }
+    this.drawWhBoard(); this.updateXRack();
+    this.whSign.visible = out;
+    if (out) this.whSign.children[0].material.opacity = REDUCED_MOTION || Math.sin(t * Math.PI * 2 / 0.9) > 0 ? 1 : 0.35;
+
+    // 불량 배출 연출
+    for (let i = this.flyers.length - 1; i >= 0; i--) {
+      const f = this.flyers[i]; f.t += rdt * Math.max(1, simSpeed * 0.5);
+      const k = Math.min(1, f.t / 0.9);
+      f.g.position.lerpVectors(f.from, f.to, k); f.g.position.y += Math.sin(k * Math.PI) * 0.8;
+      f.g.rotation.z = k * 3;
+      if (k >= 1) { f.g.visible = false; f.g.rotation.z = 0; this.itemPool.push(f.g); this.flyers.splice(i, 1); }
+    }
+
+    // 휴머노이드 충전 도크: 충전 중 초록 숨쉬기 · 비어 있으면 파랑 대기
+    for (const { d, m } of this.humanoidDocks ?? []) {
+      const on = !!m.chgNow, { led, scr } = d.userData;
+      led.emissive.setHex(on ? 0x3dff8a : 0x2aa8ff); led.emissiveIntensity = on ? 1.4 + Math.sin(t * 3) * 0.9 : 0.6;
+      scr.emissive.setHex(on ? (m.battery > 95 ? 0x3dff8a : 0xf5b82e) : 0x2aa8ff);
+    }
+    // 차량
+    for (const vv of this.vehicleViews) {
+      const v = vv.v;
+      vv.g.position.set(v.x, 0, v.z);
+      vv.yaw = lerpAngle(vv.yaw, v.heading, Math.min(1, rdt * 8));
+      vv.g.rotation.y = vv.yaw;
+      const { load, crates, tier2, led, fork } = vv.g.userData;
+      load.visible = !!v.load;
+      if (fork) {   // 지게차 포크 높이: 도크에 선 트럭 뒤쪽에 포크 끝이 다가가면 적재함 바닥(1.27m) 위까지 올려 싣고 내린다 · 그 밖에는 주행 높이
+        const fx = v.x + Math.sin(v.heading) * 1.9, fz = v.z + Math.cos(v.heading) * 1.9;
+        let near = 99;
+        for (const tk of [...(sim.yard?.trucks ?? []), ...(sim.inbound?.trucks ?? [])]) {
+          if (tk.state !== 'dock') continue;
+          const rx = tk.x - Math.sin(tk.heading ?? 0) * YARD.truckLen / 2, rz = tk.z - Math.cos(tk.heading ?? 0) * YARD.truckLen / 2;
+          near = Math.min(near, Math.hypot(fx - rx, fz - rz));
+        }
+        const want = near < 3.4 ? TRUCK_BED_LIFT * Math.min(1, (3.4 - near) / 1.2) : v.load ? 0.12 : 0;
+        fork.position.y += (want - fork.position.y) * Math.min(1, rdt * 5);
+      }
+      if (v.load) {
+        const two = !!tier2 && v.shipper && v.load.n > YARD.pallet; if (tier2) tier2.visible = two;   // 출하 2팔레트 → 2단
+        const n = v.shipper ? (two ? 12 : 6) : v.receiver ? 6 : Math.ceil((v.load.n / (v.load.type === 'raw' ? 20 : sim.mode.vehicleCap)) * 6);
+        crates.forEach((c, i) => { c.visible = i < n; c.material = v.load.type === 'raw' ? MAT.raw : v.load.type === 'parts' ? MAT.partsBin : v.load.product === 'eaxle' ? MAT.crate : MAT.carton; });
+      }
+      if (led) {
+        const col = v.charging ? 0x3dff8a : v.battery < 25 ? 0xff4040 : v.load ? 0xffb020 : 0x2aa8ff;
+        led.emissive.setHex(col);
+        led.emissiveIntensity = v.charging ? 1.5 + Math.sin(t * 4) * 1.2 : 2.5;
+      }
+      if (v.auto) vv.g.userData.beacon.material.emissiveIntensity = v.moving ? (Math.sin(t * 9) > 0 ? 3 : 0.3) : 1;
+      vv.el.innerHTML = `${v.uid ? `<i class="uid">${v.uid}</i>` : ''}${v.id}${v.kind === 'agv' ? ` · ${v.battery.toFixed(0)}%` : ''}<em>${v.task ?? '대기'}</em>`;
+    }
+    this.updateTrucks(t, rdt);
+    for (const cv of this.carrierViews) {
+      const c = cv.v;
+      cv.g.visible = c.state !== 'line';
+      if (!cv.g.visible) continue;
+      cv.g.position.set(c.x, 0, c.z);
+      cv.yaw = lerpAngle(cv.yaw, c.heading, Math.min(1, rdt * 8));
+      cv.g.rotation.y = cv.yaw;
+      cv.g.userData.led.emissive.setHex(c.state === 'park' ? 0x3dff8a : c.state === 'atSrc' ? 0xffb020 : 0x2aa8ff);
+    }
+    for (const tv of this.techViews) this.animatePerson(tv, rdt, t, true);
+    for (const hv of this.helperViews) this.animatePerson(hv, rdt, t, true);   // 부품 빈은 carryPose가 보이고 숨긴다
+    for (const qv of this.quadViews) this.animateQuad(qv, rdt, t);
+    for (const dk of this.quadDocks ?? []) {   // 충전 도크 상태등
+      const at = Math.hypot(dk.q.x - dk.q.home.x, dk.q.z - dk.q.home.z) < 0.3;
+      dk.led.emissive.setHex(dk.q.charging ? 0x3dff8a : dk.q.battery < 30 ? 0xff8a3d : 0x2aa8ff);
+      dk.led.emissiveIntensity = dk.q.charging ? 1.2 + Math.sin(t * 4) * 1.1 : at ? 2.2 : 0.8;
+    }
+    for (const dv of this.droneViews ?? []) this.animateDrone(dv, rdt, t);
+    for (const wv of this.workerViews) this.animatePerson(wv, rdt, t, false);
+
+    // IoT 데이터 패킷
+    if (mode !== 'traditional') {
+      for (const sv of this.stationViews) {
+        if (sv.st.standby) { sv.ringM.opacity = 0; sv.sensorMat.emissive.setHex(0x334048); continue; }
+        const k = ((t * 0.8 + sv.phase) % 1);
+        sv.pulse.scale.setScalar(1 + k * 3); sv.ringM.opacity = 0.6 * (1 - k);
+        sv.sensorMat.emissive.setHex(sv.st.state === 'DOWN' ? 0xff3030 : sv.st.state === 'MAINT' ? 0xffb020 : 0x37e8ff);
+        if (Math.random() < rdt * 1.6) this.spawnPacket(sv);
+      }
+      this.updatePackets(rdt);
+      for (let i = 0; i < this.serverLeds.length; i++) this.serverLeds[i].emissiveIntensity = Math.random() < 0.1 ? 0.2 : 2.2;
+    }
+    for (const c of this.chargers) c.m.emissiveIntensity = 1.2 + Math.sin(t * 2) * 0.4;
+    // 선택한 로봇: 텔레메트리 샘플링 + 바닥 선택 링
+    if (this.telemetry) {
+      this.telemetry.sample(rdt, dts);
+      const R = this.telemetry.R;
+      if (R?.obj) {
+        const p = R.obj.getWorldPosition(new THREE.Vector3());
+        this.selRing.position.set(p.x, 0.03, p.z);
+        this.selRing.scale.setScalar(R.kind === 'arm' ? 0.75 : R.kind === 'humanoid' ? 0.6 : 1.1);
+        this.selRing.material.opacity = 0.55 + Math.sin(t * 5) * 0.3;
+        this.selRing.visible = true;
+      } else this.selRing.visible = false;
+    }
+  }
+
+  // 휴머노이드 운반 자세: 위팔은 몸 옆으로 거의 내리고, 아래팔은 앞으로 (Blender 모델은 팔꿈치를 굽힘) — 손이 허리 높이(약 0.93m) 몸 앞 0.38m에 오고,
+  // 부품 빈은 두 손 사이(양옆을 잡는 높이)에 놓아 손과 함께 움직인다. 빈 윗면 먼 모서리가 머리 카메라(수직 화각 70°, 18° 내려봄) 아래 경계보다
+  // 약 7° 더 아래라 시야를 가리지 않고, 빈 안쪽 면은 몸통 앞에 떨어져 있다
+  carryPose(ud, on) {
+    const { bin, waist } = ud;
+    if (!on) { if (bin.visible) bin.visible = false; return; }
+    if (bin.parent !== waist) { waist.add(bin); bin.rotation.set(0, 0, 0); }   // 허리를 돌리면 상체와 함께 돈다
+    if (ud.elbowL) { ud.armL.rotation.set(-0.15, 0, 0.12); ud.armR.rotation.set(-0.15, 0, -0.12); ud.elbowL.rotation.x = -0.8; ud.elbowR.rotation.x = -0.8; }
+    else { ud.armL.rotation.set(-0.62, 0, 0.06); ud.armR.rotation.set(-0.62, 0, -0.06); }
+    if (!ud.hands) {   // 손 끝(손바닥 가운데) 기준점: 기본 모델은 어깨에서 0.62m, Blender 모델은 팔꿈치에서 0.42m 아래
+      const at = (o, y) => put(new THREE.Object3D(), 0, y, 0, o);
+      ud.hands = ud.elbowL ? [at(ud.elbowL, -0.42), at(ud.elbowR, -0.42)] : [at(ud.armL, -0.62), at(ud.armR, -0.62)];
+    }
+    waist.updateWorldMatrix(true, true);
+    const [a, b] = ud.hands.map((h) => waist.worldToLocal(h.getWorldPosition(new THREE.Vector3())));
+    const gap = Math.abs(a.x - b.x) - 0.1;   // 손바닥 두께만큼 안쪽 — 빈 양옆 면이 손에 닿는다
+    bin.scale.set(Math.max(0.6, Math.min(1.4, gap / 0.42)), 1, 1);
+    bin.position.set((a.x + b.x) / 2, (a.y + b.y) / 2 - 0.02, (a.z + b.z) / 2);
+    bin.visible = true;
+  }
+  animatePerson(pv, rdt, t, isTech) {
+    const v = pv.v, g = pv.g;
+    const moved = Math.hypot(v.x - pv.px, v.z - pv.pz) > 1e-4;
+    pv.px = v.x; pv.pz = v.z;
+    g.position.set(v.x, 0, v.z);
+    let target = v.heading;
+    const st = v.station, ud = g.userData;
+    // 서서 일할 때 바라볼 곳: 대응 중인 현장 이벤트 → 일하는 셀(정비·부품 보충) — Atlas 휴머노이드는 발은 두고 허리(360°)·머리(±90°)를 돌린다
+    let look = null;
+    if (!moved && v.kind === 'humanoid' && v.task) {
+      const ev = (this.sim.fieldEvents ?? []).find((e) => !e.cleared && v.job?.ev === e);
+      const near = ev ?? v.job?.st ?? this.sim.processing.reduce((b, s2) => (Math.hypot(s2.x - v.x, (s2.z ?? 0) - v.z) < Math.hypot(b.x - v.x, (b.z ?? 0) - v.z) ? s2 : b), this.sim.processing[0]);
+      if (near && Math.hypot(near.x - v.x, (near.z ?? 0) - v.z) < 4.5) look = Math.atan2(near.x - v.x, (near.z ?? 0) - v.z);
+    }
+    if (!moved && st && !ud.waist) target = Math.atan2(st.x - v.x, st.z - v.z);
+    if (!moved && isTech && v.task && v.kind === 'human') target = Math.PI;
+    const face = !moved && this.mlFace?.get(v);   // 미니로드 출고 자리에서 토트를 받는 동안은 선반을 본다
+    if (face != null && face !== false) { target = face; look = face; }
+    pv.yaw = lerpAngle(pv.yaw, target, Math.min(1, rdt * 6));
+    g.rotation.y = pv.yaw;
+    if (ud.waist) {
+      // 허리: 바라볼 곳과 발 방향의 차이만큼 (어느 방향이든, 360°) · 머리: 남은 각도와 둘러보기(±90° 안)
+      const want = look != null ? Math.atan2(Math.sin(look - pv.yaw), Math.cos(look - pv.yaw)) : 0;
+      pv.waistYaw = lerpAngle(pv.waistYaw ?? 0, want, Math.min(1, rdt * 3));
+      ud.waist.rotation.y = pv.waistYaw;
+      const rest = look != null ? Math.atan2(Math.sin(want - pv.waistYaw), Math.cos(want - pv.waistYaw)) : 0;
+      const scan = moved ? Math.sin(t * 0.9 + (v.id?.length ?? 0)) * 0.55 : v.task ? Math.sin(t * 0.6) * 0.3 : 0;   // 걸을 때 좌우를 살피고, 일할 때 작업 부위를 훑어본다
+      ud.head.rotation.y = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rest + scan));
+      v.waistYaw = pv.waistYaw; v.headYaw = ud.head.rotation.y;   // 텔레메트리·에피소드용
+    }
+    if (ud.body) {
+      if (moved) {
+        ud.body.position.y = Math.abs(Math.sin(t * 9)) * 0.06;
+        ud.armL.rotation.x = Math.sin(t * 9) * 0.6; ud.armR.rotation.x = -Math.sin(t * 9) * 0.6;
+        if (ud.legL) { ud.legL.rotation.x = -Math.sin(t * 9) * 0.5; ud.legR.rotation.x = Math.sin(t * 9) * 0.5; }
+      } else {
+        ud.body.position.y = 0;
+        const working = (st && st.state === 'BUSY') || (isTech && v.task && !moved);
+        ud.armL.rotation.x = working ? -0.9 + Math.sin(t * 5) * 0.3 : 0;
+        ud.armR.rotation.x = working ? -1.1 + Math.cos(t * 6) * 0.35 : 0;
+        if (ud.legL) { ud.legL.rotation.x = 0; ud.legR.rotation.x = 0; }
+      }
+      if (ud.bin) this.carryPose(ud, v.carry);   // 운반: 두 손으로 부품 빈 양옆을 잡고 몸 앞 허리 높이에 든다
+      if (ud.visor) ud.visor.emissive.setHex(v.task ? 0x37e8ff : 0x3dff8a);
+      // 챙긴 도구 표시 (정비실에서 챙기고 반납할 때까지)
+      if (v.tool !== undefined || ud.toolKits) {
+        ud.toolKits ??= makeToolKits(g, ud);
+        const vis = TOOL_KITS[v.tool]?.vis;
+        if (ud.toolShown !== vis) { ud.toolShown = vis; for (const [k, o] of Object.entries(ud.toolKits.kits)) o.visible = k === vis; for (const [k, o] of Object.entries(ud.toolKits.extra)) o.visible = k === vis; }
+        if (vis && !v.carry) { const hold = vis === 'mop' || vis === 'broom' ? -0.5 : -0.15; ud.armR.rotation.x = Math.min(ud.armR.rotation.x, 0) * 0.3 + hold; }   // 도구 든 팔은 크게 흔들지 않는다
+        if (vis) {   // 손에 든 도구는 팔·팔꿈치 각도를 되돌려 늘 아래로 곧게 늘어진다 (대걸레·빗자루 자루는 수직)
+          const r = ud.armR.rotation.x + (ud.elbowR?.rotation.x ?? 0), l = ud.armL.rotation.x + (ud.elbowL?.rotation.x ?? 0);
+          ud.toolKits.anchors.forEach((a, i) => { a.rotation.x = -(i === ud.toolKits.anchors.length - 1 ? l : r); });
+        }
+      }
+      if (ud.kneeL) {   // Blender 휴머노이드: 앞으로 내딛는 다리의 무릎을 굽히고, 팔꿈치는 걸음·작업·운반에 맞춰 굽힌다
+        const sw = moved ? Math.sin(t * 9) : 0;
+        ud.kneeL.rotation.x = Math.max(0, sw) * 0.7; ud.kneeR.rotation.x = Math.max(0, -sw) * 0.7;
+        const el = moved ? -0.35 : -0.12;
+        if (!v.carry) { ud.elbowL.rotation.x = ud.armL.rotation.x < -0.5 ? -0.7 : el; ud.elbowR.rotation.x = ud.armR.rotation.x < -0.5 ? -0.7 : el; }
+      }
+      if (ud.bin && v.carry) this.carryPose(ud, true);   // 무릎·팔꿈치 계산 뒤 다시 — 팔꿈치 각도까지 운반 자세로
+    } else if (ud.arm) {
+      const working = v.task && !moved;
+      ud.arm.pose(Math.sin(t * 1.5) * 0.6, working ? 0.8 + Math.sin(t * 3) * 0.2 : 0.2, working ? 1.0 : 0.9, 0.5);
+      ud.beacon.emissiveIntensity = working || moved ? (Math.sin(t * 10) > 0 ? 4 : 0.3) : 1;
+    }
+    if (pv.el) pv.el.innerHTML = `${v.uid ? `<i class="uid">${v.uid}</i>` : ''}${v.id}<em>${v.task ?? '대기'}</em>`;
+  }
+
+  animateQuad(qv, rdt, t) {
+    const v = qv.v, g = qv.g, ud = g.userData;
+    const moved = Math.hypot(v.x - qv.px, v.z - qv.pz) > 1e-4;
+    qv.px = v.x; qv.pz = v.z;
+    g.position.set(v.x, 0, v.z);
+    // 점검 중에는 설비 쪽을 바라본다
+    const target = v.scanning ? Math.atan2(v.scanning.x - v.x, v.scanning.z - v.z) : v.heading;
+    qv.yaw = lerpAngle(qv.yaw, target, Math.min(1, rdt * 6));
+    g.rotation.y = qv.yaw;
+    ud.legs.forEach(({ hip, knee }, i) => {
+      const ph = t * 10 + (i === 0 || i === 3 ? 0 : Math.PI);   // 대각 보행(trot)
+      if (ud.nativeSpot) {
+        const angle = (node, q) => node.quaternion.setFromAxisAngle(new THREE.Vector3(...node.userData.axis), THREE.MathUtils.clamp(q, node.userData.lower - node.userData.rest_angle, node.userData.upper - node.userData.rest_angle));
+        angle(hip, moved ? Math.sin(ph) * .25 : 0); angle(knee, moved ? Math.max(0, -Math.sin(ph)) * .4 : 0); return;
+      }
+      hip.rotation.x = moved ? Math.sin(ph) * 0.45 : 0;
+      knee.rotation.x = moved ? Math.max(0, -Math.sin(ph)) * 0.6 + (ud.blender ? 0 : 0.15) : (ud.blender ? 0 : 0.15);
+    });
+    ud.body.position.y = (ud.bodyRestHeight ?? 0.55) + (moved ? Math.abs(Math.sin(t * 10)) * 0.025 : 0);
+    ud.beam.visible = !!v.scanning;
+    const sweep = v.scanning ? Math.sin(t * 2.5) * 0.4 : 0;   // 점검 중 좌우로 쓸어본다
+    if (ud.camRest) ud.cam.quaternion.setFromAxisAngle(UP, sweep).multiply(ud.camRest); else ud.cam.rotation.y = sweep;
+    qv.el.innerHTML = `${v.uid ? `<i class="uid">${v.uid}</i>` : ''}${v.id} · ${v.battery.toFixed(0)}%<em>${v.task ?? "대기"}</em>`;
+  }
+
+  spawnPacket(sv) {
+    let p = this.packets.find((q) => !q.alive);
+    if (!p) {
+      if (this.packets.length > 80) return;
+      const m = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshBasicMaterial({ color: 0x7ff3ff, toneMapped: false }));
+      this.dyn.add(m);
+      p = { m, alive: false };
+      this.packets.push(p);
+    }
+    p.alive = true; p.t = 0; p.m.visible = true;
+    p.a = sv.sensor.position.clone();
+    p.b = this.serverPos.clone();
+    p.c = p.a.clone().lerp(p.b, 0.5); p.c.y = 9;
+    p.m.material.color.setHex(sv.st.state === 'DOWN' ? 0xff5050 : 0x7ff3ff);
+  }
+  updatePackets(rdt) {
+    for (const p of this.packets) {
+      if (!p.alive) continue;
+      p.t += rdt * 0.7;
+      if (p.t >= 1) { p.alive = false; p.m.visible = false; continue; }
+      const k = p.t, a = p.a, b = p.b, c = p.c;
+      p.m.position.set(
+        (1 - k) * (1 - k) * a.x + 2 * (1 - k) * k * c.x + k * k * b.x,
+        (1 - k) * (1 - k) * a.y + 2 * (1 - k) * k * c.y + k * k * b.y,
+        (1 - k) * (1 - k) * a.z + 2 * (1 - k) * k * c.z + k * k * b.z,
+      );
+    }
+  }
+
+  animateStation(sv, t, rdt, dts) {
+    const { st, parts } = sv;
+    const busy = st.state === 'BUSY';
+    sv.light.userData.set(st.state, t);
+    const p = st.progress ?? 0;
+    // 비상정지·보호정지: 로봇이 그 자세 그대로 멈춘다
+    const frozen = st.state === 'ESTOP' || st.state === 'PSTOP';
+    if (parts.robots && !frozen) parts.robots.forEach((r, i) => {
+      // 게이트 결정: 주 작업 로봇은 작업하고, 보조 로봇은 작업물을 잡아 고정한 자세로 천천히 따라간다
+      const lead = this.sim.isLead(st, i);
+      if (st.def.fasten && r.arm?.native && r.slot) return this.animFasten(r, st, busy, p, i);   // 체결·압입 셀: 자기 점 2~4곳 접촉 체결
+      if (r.vla) return this.animVLA(r, st, busy && lead, p, i);
+      r.anim(busy && lead, t + r.phase, p);
+      if (r.kind === 'ammr' && st.vla) this.animAMMRVLA(r, st, busy, t, i, lead);
+    });
+    // AMMR: 대상물마다 작업 위치 ↔ 부품 선반 왕복 (회전 → 주행 → 양팔 피킹 → 회전 → 복귀 → 작업)
+    if (st.ammr && parts.robots) parts.robots.forEach((r, i) => {
+      const u = st.ammr[i]; if (!u || !r.slot || r.contactAp > 0) return;   // 접촉 작업 중에는 ammrContact가 자리를 정한다
+      const e = u.pos * u.pos * (3 - 2 * u.pos), pl = r.plan;
+      if (pl?.mode === 'x') {
+        // 셀 옆쪽 선반: 진행 방향(±x)으로 돌아 로봇 줄을 따라 주행
+        r.root.position.x = r.slot.x + (pl.pick.x - r.slot.x) * e;
+        const face = pl.dir < 0 ? -Math.PI / 2 : Math.PI / 2;
+        const d = ((face - r.slot.yaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+        r.root.rotation.y = r.slot.yaw + u.turn * d;
+      } else {
+        r.root.position.z = r.slot.z + (r.slot.side * AMMR.pickZ - r.slot.z) * e;
+        r.root.rotation.y = r.slot.yaw + u.turn * Math.PI;
+      }
+      // 피지컬AI: 선반을 오가는 동안은 두 팔을 작업 자세(그리퍼 1.28m)로 들고 간다 — 기본 대기 자세(0.88m)로 선반 앞에 서면 그리퍼가 가운데 선반판(0.96m)에 닿는다
+      if (st.vla && u.phase !== 'work' && u.phase !== 'pick') r.arms.forEach((a, k) => a.pose((k ? -1 : 1) * 0.3, 0.85, 1.25, 0.75, 0, 0));
+      else if (u.phase !== 'work' && !(st.vla && u.phase === 'pick')) r.anim(u.phase === 'pick', t + r.phase, p);
+      r.bin.visible = u.carry;   // 선반에서 가져온 부품 (플랫폼 트레이)
+    });
+    if (parts.racks?.length) {
+      const frac = st.parts != null ? st.parts / (this.sim.mode.partsCap || 40) : 1;
+      for (const rk of parts.racks) rk.bins.forEach((b, k) => (b.visible = k < Math.ceil(frac * rk.bins.length)));
+    }
+    if (st.standby) {
+      if (parts.scan) parts.scan.visible = false;
+      if (parts.stack) parts.stack.forEach((b) => (b.visible = false));
+      return;
+    }
+    if (parts.machine) { parts.machine.update({ busy, progress: p, time: t, rdt, dts, frozen, fault: st.state === 'DOWN' || st.state === 'MAINT' }); return; }
+    switch (st.type) {
+      case 'cnc': {
+        const down = busy && p > 0.1 && p < 0.9;
+        parts.head.position.y += ((down ? 1.75 : 2.2) - parts.head.position.y) * Math.min(1, rdt * 5);
+        if (busy) parts.spindle.rotation.y += dts * 40;
+        parts.head.position.x = busy ? Math.sin(p * Math.PI * 6) * 0.25 : parts.head.position.x * 0.9;
+        parts.screen.emissive.setHex(st.state === 'DOWN' ? 0xff3030 : 0x58c4ff);
+        stepSparks(parts.sparks, down, { x: parts.head.position.x, y: BELT_Y + 0.45, z: 0 }, rdt, 1.4, -5);
+        break;
+      }
+      case 'weld': {
+        const welding = busy && parts.robots.length > 0 && this.sim.mode.key !== 'traditional' && Math.sin(t * 6) > -0.3;
+        const manual = busy && this.sim.mode.key === 'traditional' && Math.sin(t * 4) > 0;
+        stepSparks(parts.sparks, welding || manual, { x: manual ? -0.3 : 0, y: BELT_Y + 0.45, z: manual ? 0.4 : 0 }, rdt, 2.2, -7);
+        break;
+      }
+      case 'paint': {
+        const w = t * 2.5;
+        parts.lamp.emissiveIntensity = busy ? 1.4 : 0.5;
+        stepSparks(parts.mist, busy, { x: Math.sin(w) * 0.5, y: BELT_Y + 0.9, z: 0 }, rdt, 1.0, -1.5);
+        break;
+      }
+      case 'press': {
+        const k = busy ? Math.max(0, Math.sin(p * Math.PI * 2 - Math.PI / 2)) : 0;
+        parts.ram.position.y = 2.8 - k * 1.1;
+        break;
+      }
+      case 'laser': {
+        parts.beam.visible = busy && p > 0.1 && p < 0.9;
+        parts.head.position.x = busy ? Math.sin(p * Math.PI * 8) * 0.35 : 0;
+        parts.head.position.z = busy ? Math.cos(p * Math.PI * 5) * 0.2 : 0;
+        stepSparks(parts.sparks, parts.beam.visible, { x: parts.head.position.x, y: BELT_Y + 0.42, z: parts.head.position.z }, rdt, 1.2, -4);
+        break;
+      }
+      case 'test': {
+        const down = busy && p > 0.15 && p < 0.85;
+        parts.probe.position.y += ((down ? 1.55 : 2.1) - parts.probe.position.y) * Math.min(1, rdt * 6);
+        parts.screen.emissive.setHex(st.state === 'DOWN' ? 0xff3030 : down && Math.sin(t * 12) > 0 ? 0xf5b82e : 0x3ddc84);
+        break;
+      }
+      case 'assembly':
+        break;
+      case 'pack':
+      case 'sort': {
+        if (parts.markMat) parts.markMat.emissiveIntensity = st.lastMark && this.sim.time - st.lastMark.t < 1.2 ? 6 : 0.35;   // 시리얼 QR 라벨 판독 순간
+        if (!parts.gateSign) break;
+        // 대상물이 입구 게이트를 지나는 동안 스캔 → 판별 결과를 표시판·스캔 링 색으로 보여 준다
+        const passing = !!st.item && (this.sim.entryK(st) < 1 || (st.itemT ?? 9) < this.sim.entryTime + 0.6);
+        parts.scan.visible = passing;
+        if (passing) parts.scan.position.x = parts.gateX + Math.sin(t * 9) * 0.12;
+        const pc = st.gate?.product ? ZONE_COLOR[st.gate.product] : 0xffffff;
+        parts.ringMat.color.setHex(pc); parts.ringMat.emissive?.setHex(pc);
+        parts.ringMat.emissiveIntensity = passing ? 6 : st.item ? 1.4 : 0.4;
+        drawGateSign(parts.gateSign, st);
+        break;
+      }
+      case 'pressfit': {
+        const k = busy ? Math.max(0, Math.sin(p * Math.PI * 3 - Math.PI / 2)) : 0;
+        parts.ram.scale.y = 1 + k * 0.6;
+        parts.screen.emissive.setHex(st.state === 'DOWN' ? 0xff3030 : k > 0.9 ? 0xf5b82e : 0x58c4ff);
+        break;
+      }
+      case 'screw': {
+        const post = headAfter(st, 0);   // 로봇 체결이 끝나고 팔이 대기 자세로 돌아온 뒤(후공정)만 문형 너트러너가 내려와 전수 토크 판정
+        const down = busy && p > post && Math.sin((p - post) / (1 - post) * Math.PI * 4) > 0;
+        parts.head.position.y += ((down ? 1.95 : 2.3) - parts.head.position.y) * Math.min(1, rdt * 8);
+        if (down) parts.bit.rotation.y += dts * 30;
+        parts.screen.emissive.setHex(st.state === 'DOWN' ? 0xff3030 : down ? 0xf5b82e : 0x3ddc84);
+        break;
+      }
+      case 'fasten': {
+        const post = headAfter(st, 0.2);
+        const down = busy && p > post + 0.01 && p < 0.97;   // 로봇 볼트 체결이 끝난 뒤 다축 너트러너가 내려온다
+        // 너트러너가 내려와 있는 동안 로봇은 팔을 접고 기다린다 (헤드와 간섭 방지)
+        if ((down || parts.head.position.y < 2.35) && parts.robots) for (const r of parts.robots) r.anim(false, t);   // 헤드가 다 올라갈 때까지도 접은 채 기다린다
+        parts.head.position.y += ((down ? 1.95 : 2.4) - parts.head.position.y) * Math.min(1, rdt * 5);
+        if (down) for (const sp of parts.spindles) sp.rotation.y += dts * 25;
+        parts.screen.emissive.setHex(st.state === 'DOWN' ? 0xff3030 : down && Math.sin(t * 10) > 0 ? 0xf5b82e : 0x3ddc84);
+        break;
+      }
+      case 'vision': {
+        const scanning = busy && parts.auto.visible;
+        parts.scan.visible = scanning;
+        if (scanning) parts.scan.position.x = Math.sin(p * Math.PI * 2) * 0.6;
+        parts.ringMat.emissiveIntensity = scanning && p > 0.45 && p < 0.55 ? 8 : 0.4;
+        break;
+      }
+      case 'source': {
+        // 투입 주기마다: 자재 더미 맨 위 박스 위로 X·Y 이동 → Z 하강·집기 → 상승 → 투입 위치(AMR 지그·컨베이어)로 X·Y 이동 → 하강·내려놓기
+        const sim = this.sim, raw = sim.rawStock, T = sim.releaseInterval;
+        const waiting = sim.releaseTimer >= T - 1e-6;                    // 투입 시점인데 내려놓을 곳(빈 AMR)이 없으면 들고 대기
+        const k = Math.min(1, sim.releaseTimer / T);
+        const Z = parts.zoneStock;
+        // 정밀조립Zone: 재고를 혼류 비율로 양쪽에 나눠 보이고, 다음 투입 제품 쪽에서 집는다
+        let next = null, nDT = 0, nEA = 0;
+        if (Z) {
+          const w = sim.mix ?? { doortrim: 1, eaxle: 1 }, tot = (w.doortrim || 0) + (w.eaxle || 0) || 1;
+          nDT = Math.min(Z.dt.slots.length, Math.round(raw * (w.doortrim || 0) / tot)); nEA = Math.min(Z.ea.slots.length, raw - nDT);
+          next = sim.nextProduct?.() ?? 'doortrim';
+          if (next === 'eaxle' && nEA === 0) next = 'doortrim'; else if (next === 'doortrim' && nDT === 0) next = 'eaxle';
+        }
+        const side = Z ? (next === 'eaxle' ? Z.ea : Z.dt) : null, sn = next === 'eaxle' ? nEA : nDT;
+        const top = Z ? side.slots[sn - 1] : parts.stack[raw - 1]?.position;
+        const pick = Z ? (top ? { x: top.x, z: top.z, y: top.y + side.h / 2 } : { x: 0, z: 2.15, y: 0.45 }) : top ? { x: top.x, z: top.z, y: top.y } : { x: 0, z: 1.5, y: 0.45 };
+        const place = { x: 0, z: 0, y: BELT_Y + (Z ? 0.05 + side.h / 2 : 0.18) }, UP = Z ? 2.45 : 2.05;     // 들린 물체 중심 높이 기준
+        // [진행, 위치(0=투입·1=더미), 높이(0=위·1=아래), 집음]
+        const K = [[0, 0, 0, 0], [0.18, 1, 0, 0], [0.3, 1, 1, 0], [0.36, 1, 1, 1], [0.48, 1, 0, 1], [0.7, 0, 0, 1], [0.84, 0, 1, 1], [1, 0, 1, 1]];
+        let pos = 0, down = 0, hold = 0;
+        if (raw > 0 && !(st.state === 'HOLD' || st.state === 'ESTOP' || st.state === 'PSTOP')) {
+          // 빈 AMR이 적재 위치에 도착해 있어야 내려놓는다 — 아직이면 투입 위치 위에서 들고 기다린다 (컨베이어 라인은 항상 가능)
+          const ready = !sim.useAMR || sim.carriers.some((c) => c.state === 'atSrc');
+          if (waiting) { pos = 0; down = ready ? 1 : 0.72; hold = 1; }   // AMR 지그 바로 위(약 5cm)에서 대기 — AMR이 아래로 들어오면 곧바로 내려놓는다
+          else {
+            const i = K.findIndex((q) => q[0] >= k), a = K[Math.max(0, i - 1)], b = K[i];
+            const f = b[0] > a[0] ? (k - a[0]) / (b[0] - a[0]) : 1, e = f * f * (3 - 2 * f);
+            pos = a[1] + (b[1] - a[1]) * e; down = a[2] + (b[2] - a[2]) * e; hold = a[3];
+            if (!ready && pos < 0.5) down = Math.min(down, 0.72);
+          }
+        }
+        const x = place.x + (pick.x - place.x) * pos, z = place.z + (pick.z - place.z) * pos;
+        const lowY = pos > 0.5 ? pick.y : place.y, y = UP + (lowY - UP) * down;
+        const sm = Math.min(1, rdt * 14);
+        parts.bridge.position.x += (x - parts.bridge.position.x) * sm;
+        parts.car.position.z += (z - parts.car.position.z) * sm;
+        parts.lift.position.y += (y - 1.15 - parts.lift.position.y) * sm;   // 들린 박스 중심이 기본 1.15m
+        parts.held.visible = !!hold;
+        if (Z) {
+          parts.heldEA.visible = next === 'eaxle'; parts.heldDT.visible = next !== 'eaxle';
+          const eaN = nEA - (hold && next === 'eaxle' ? 1 : 0);
+          Z.dt.setCount(nDT - (hold && next !== 'eaxle' ? 1 : 0)); Z.ea.setCount(eaN);
+          Z.ea.boards.forEach((b, k) => { b.visible = eaN > (k + 1) * 9; });   // 위층이 있을 때만 그 아래 받침목
+        } else parts.stack.forEach((bx, i) => (bx.visible = i < raw - (hold ? 1 : 0)));
+        break;
+      }
+      case 'sink': {
+        const fg = this.sim.fgStock;
+        // 로봇이 아직 내려놓지 않은 박스(집는 중·옮기는 중·대기 중)는 적재 팔레트에 보이지 않는다 — 구분 적재장은 집어 들었지만 아직 놓지 않은 박스
+        if (parts.zoneStacks) for (const [k, arr] of Object.entries(parts.zoneStacks)) { const a = parts.arms?.[k], pend = !a ? 0 : this.sim.zone ? (a.cyc && !a.cyc.placed && (this.sim.stats.grabBy?.[k] ?? 0) > a.cyc.grabBase ? 1 : 0) : a.queue + (a.cyc && !a.cyc.placed ? 1 : 0); arr.forEach((b, i) => (b.visible = i < this.sim.fgBy[k] - pend)); }
+        else parts.stack.forEach((b, i) => (b.visible = i < fg));
+        if (parts.arms) this.animatePalletizers(parts, dts);
+        break;
+      }
+    }
+  }
+
+  // 드론: 위치·고도, 진행 방향으로 살짝 기울기, 로터 회전, 항법등·스트로브, 점검 중 하방 관찰 빔
+  animateDrone(dv, rdt, t) {
+    const d = dv.v, g = dv.g, ud = g.userData;
+    const vx = (d.x - dv.px) / Math.max(rdt, 1e-3), vz = (d.z - dv.pz) / Math.max(rdt, 1e-3); dv.px = d.x; dv.pz = d.z;
+    g.position.set(d.x, d.y, d.z);
+    dv.yaw = lerpAngle(dv.yaw, d.heading, Math.min(1, rdt * 6)); g.rotation.y = dv.yaw;
+    const sp = Math.min(1, Math.hypot(vx, vz) / 3.4);
+    ud.body.rotation.x += (sp * 0.18 - ud.body.rotation.x) * Math.min(1, rdt * 4);   // 전진할 때 앞으로 숙인다
+    const flying = d.y > 0.3;
+    ud.body.position.y = flying ? Math.sin(t * 2.3) * 0.03 : 0;
+    ud.rotors.forEach((r, i) => (r.rotation.y += (flying ? 60 : 2) * rdt * (i % 3 ? 1 : -1)));
+    ud.strobe.material.emissiveIntensity = Math.sin(t * 7) > 0.85 ? 6 : 0.3;
+    const look = flying && (d.mode === 'mission' || (d.mode === 'patrol' && d.hover > 0));
+    ud.beam.visible = look;
+    if (look) { ud.beam.scale.set(1, d.y - 0.2, 1); ud.beam.position.y = -(d.y - 0.2) / 2 - 0.1; ud.beam.material.color.setHex(d.mode === 'mission' ? 0xff8a3d : 0x37e8ff); ud.beam.material.opacity = d.mode === 'mission' ? 0.14 : 0.08; }
+    dv.el.innerHTML = `${d.uid ? `<i class="uid">${d.uid}</i>` : ''}${d.id} · ${d.battery.toFixed(0)}%<em>${d.task ?? '대기'}</em>`;
+  }
+
+  // 피지컬AI VLA 조립·체결 (6축 로봇): 손목 카메라로 선반 부품 인식 → 집기 → 대상물로 운반 → 조립(체결은 너트 돌림) → 선반 복귀
+  // 셀 사이클 진행률(p)에 맞춰 역기구학 키프레임을 따라간다. 로봇마다 시작을 조금씩 엇갈린다
+  // 체결·압입 셀 (6축·협동로봇): 대상물이 들어오면 부품을 집어(자동화: 옆 피더 · 피지컬AI: 로봇 옆 부품 선반) 대상물 윗면의 자기 점 2~4곳을
+  // 차례로 — 위에서 툴을 세워 접근 → 손끝 접촉 → 체결(비트 회전) 또는 압입(1cm 누름) → 들어 올림 — 처리하고 대기 자세로 돌아간다 (sim.js fastenPts · line.js fasten)
+  animFasten(r, st, busy, p, i) {
+    const near0 = (z0, z1, f) => (f > 0 ? z0 : z1);
+    const F = st.def.fasten, A = r.arm, n = st.fastenPts?.[i] ?? 0, P = r.root.parent;
+    const home = r.fHome ??= workHome(r);
+    if (!busy || !st.item || !n) { r.fCur = r.fCur ? r.fCur.map((v, k) => v + (home[k] - v) * 0.15) : home.slice(); A.pose(...r.fCur); if (r.vla) r.vla.held.visible = false; return; }
+    const it = st.item.id, inCell = this.sim.entryK(st) >= 1;   // 체결 점은 대상물이 셀 중앙에 다 들어온 뒤에 잡는다 (들어오는 중이면 상자가 입구 쪽으로 최대 2m 비켜 있다)
+    const loc0 = (x, y, z) => r.root.worldToLocal(P.localToWorld(new THREE.Vector3(x, y, z)));
+    // 부품 집는 곳: 피지컬AI는 로봇 옆 부품 선반, 자동화는 가장 가까운 셀 피더(랙·볼 피더) 윗면 가운데
+    const pk = r.vla ? r.vla.shelf : (r.fFeed ??= (() => { const fs = (this.stationViews.find((v) => v.st === st)?.parts.feeders ?? []).map((o) => contactBox(o, P)).filter((b) => b && Math.sign((b.min[2] + b.max[2]) / 2) === Math.sign(r.slot.z));   // 자기 쪽(통로 같은 편) 피더만 — 마주 보는 로봇과 한 피더를 같이 쓰면 팔이 피더 위에서 만난다
+      const b = fs.sort((a, c) => Math.hypot((a.min[0] + a.max[0]) / 2 - r.slot.x, (a.min[2] + a.max[2]) / 2 - r.slot.z) - Math.hypot((c.min[0] + c.max[0]) / 2 - r.slot.x, (c.min[2] + c.max[2]) / 2 - r.slot.z))[0];
+      const near = b && Math.hypot((b.min[0] + b.max[0]) / 2 - r.slot.x, (b.min[2] + b.max[2]) / 2 - r.slot.z) < 1.4;   // 팔이 닿는 피더만 (멀면 옆 로봇 위로 팔을 뻗는다)
+      if (near) return { x: (b.min[0] + b.max[0]) / 2, y: b.max[1] - 0.025, z: (b.min[2] + b.max[2]) / 2 };
+      // 자기 쪽에 닿는 피더가 없으면 로봇 뒤 바깥 대각(셀 끝 쪽 0.6m · 통로 반대쪽 셀 경계 안)에 부품 트레이를 둔다 — 바로 옆(셀 끝)은 경광등 기둥 앞이라 집으러 오가는 팔이 경광등을 친다
+      const tx = r.slot.x + (r.slot.x < 0 ? -0.6 : 0.6), tz = Math.sign(r.slot.z) * Math.min(Math.abs(r.slot.z) + 0.8, 2.05), tray = put(new THREE.Group(), tx, 0, tz, P);
+      tray.userData.nearLight = Math.hypot(tx + 1.9, tz + 1.6) < 0.9;   // 경광등(셀 로컬 −1.9, −1.6 · 머리 높이 1.0~1.45m) 바로 옆 트레이
+      put(box(0.4, 0.85, 0.4, MAT.steel), 0, 0.425, 0, tray); put(box(0.36, 0.08, 0.36, std(0x2f6fd6)), 0, 0.89, 0, tray);
+      return { x: tx, y: 0.93 - 0.03 + 0.005, z: tz, lift: tray.userData.nearLight ? 0.68 : 0.3 }; })());
+    const pick = r.fPick ??= [A.ik(...loc0(pk.x, pk.y + (pk.lift ?? 0.3), pk.z).toArray(), true),   // lift: 경광등 옆 트레이는 집은 볼트가 경광등 머리 위로 지나가게 높이 들어 올린다
+       A.ik(...loc0(pk.x, pk.y + 0.1, pk.z).toArray(), true)];   // 집는 높이: 부품 윗면 + 손끝에 매달린 부품 길이(볼트·스크류 약 8cm) 여유 — 낮으면 집은 부품이 피더 속으로 들어간다
+    const plan = (r.fPlan?.item === it) ? r.fPlan : !inCell ? null : (() => {
+      const g = this.itemMeshes.get(it), box = g && contactBox(g, P, g.userData.amr); if (!box) return null;
+      const [x0, , z0] = box.min, [x1, y1, z1] = box.max, cz = (z0 + z1) / 2, f = Math.sign(cz - r.slot.z) || 1, hz = (z1 - z0) / 2;
+      // 점은 자기 x 구간(pointRange — 다른 로봇과 겹치지 않음) · 대상물의 로봇 쪽 가장자리 안쪽(가까운 모서리 + 0.06m 남짓)
+      const [xa, xb, inA, inB] = pointRange(r, this.stationViews.find((v) => v.st === st)?.parts.robots ?? [r], x0, x1), zP = near0(z0, z1, f) + f * Math.min(0.08, hz * 0.3);
+      const loc = (x, y, z) => r.root.worldToLocal(P.localToWorld(new THREE.Vector3(x, y, z)));
+      const ik = (v) => A.ik(v.x, v.y, v.z, contactMode(box).dir);
+      const span = xb - xa - inA - inB, pts = Array.from({ length: n }, (_, k) => span > 0 ? xa + inA + span * (n === 1 ? 0.5 : k / (n - 1)) : (xa + xb) / 2);   // 구간이 좁으면 가운데에 모아 이웃 구간을 넘지 않는다
+      return r.fPlan = { item: it, pts: pts.map((x) => { const y = surfaceY(g, P, g.userData.amr, x, zP, y1); return [ik(loc(x, y + 0.1, zP)), ik(loc(x, y + 0.02, zP)), ik(loc(x, y + (F.kind === 'press' ? 0.01 : 0.008), zP)), ik(loc(x, y + 0.3, zP))]; }) };   // 그 자리 실제 윗면에 손끝 — 툴이 27° 기울어 손가락 모서리가 TCP보다 약 2cm 낮다: 닿음 +2cm · 압입 +1cm(1cm 누름) · 체결 +0.8cm(비트가 나사 머리에 닿음)
+    })();
+    // 진행률 → 시간(명목 사이클 기준): 준비(정렬·선반 위로) → 점마다 [부품 선반으로 → 부품 1개 집기 → 점 위로 → 손끝 접촉 → 체결(비트 회전)/압입 → 들어 올림] → 복귀
+    // 부품은 한 번에 1개만 — 점마다 선반을 다녀온다 (line.js fasten.per에 왕복 시간 포함)
+    const T = fastenT(F, st.fastenPts), tau = p * T, lerp = (a, b, k) => a.map((v, j) => v + (b[j] - v) * k), ease = (k) => { k = Math.min(1, Math.max(0, k)); return k * k * (3 - 2 * k); };
+    const [up, grab] = pick, seg = (f, a, b) => (f - a) / (b - a);
+    let q, spin = 0, held = false;
+    if (tau < F.setup || !plan) q = lerp(home, up, ease(plan ? tau / F.setup : Math.min(1, tau / F.setup)));   // 점이 아직 없으면(대상물 진입 중) 선반 위에서 기다린다
+    else if (tau < F.setup + n * F.per) {
+      // 선반 ↔ 점 이동은 대상물 0.3m 위 경유점(high)으로 — 관절 보간으로 곧장 가면 아래팔이 대상물 위로 처진다 · 점에서는 위에서 곧게 내려가고 올라온다
+      const u = (tau - F.setup) / F.per, k = Math.floor(u), f = u - k, [above, touch, work, high] = plan.pts[k], from = k ? plan.pts[k - 1][3] : up;
+      if (f < 0.15) q = lerp(from, up, ease(f / 0.15));                       // 부품 선반 위로 (첫 점은 이미 위에 있다)
+      else if (f < 0.22) q = lerp(up, grab, ease(seg(f, 0.15, 0.22)));        // 내려가 부품 1개 집기
+      else if (f < 0.28) q = grab;
+      else if (f < 0.35) q = lerp(grab, up, ease(seg(f, 0.28, 0.35)));
+      else if (f < 0.5) q = lerp(up, high, ease(seg(f, 0.35, 0.5)));          // 점 0.3m 위로 가져가
+      else if (f < 0.57) q = lerp(high, above, ease(seg(f, 0.5, 0.57)));
+      else if (f < 0.64) q = lerp(above, touch, ease(seg(f, 0.57, 0.64)));    // 손끝 접촉
+      else if (f < 0.88) {
+        q = lerp(touch, work, ease(seg(f, 0.64, 0.68)));   // 압입: 손끝 접촉 → 1cm 누름
+        if (F.kind === 'screw') {   // 체결: 3번 — 런다운 1번 + 토크업 2번. 번마다 비트를 눌러 10/3바퀴 돌리고 살짝 들었다가 다시 물린다 (합계 10바퀴 — 정수 바퀴라 끝나고 손목이 튀지 않는다)
+          const u = seg(f, 0.64, 0.88) * 3, k = Math.min(2, Math.floor(u)), w = u - k;
+          const lift = w > 0.82 && k < 2 ? Math.sin((w - 0.82) / 0.18 * Math.PI) : 0;   // 번 사이 비트를 떼었다 다시 물림
+          q = lerp(work, touch, lift);
+          spin = (k + Math.min(1, w / 0.82)) * (10 / 3) * Math.PI * 2;
+        }
+      }
+      else if (f < 0.94) q = lerp(work, above, ease(seg(f, 0.88, 0.94)));
+      else q = lerp(above, high, ease(seg(f, 0.94, 1)));
+      held = f >= 0.25 && f < 0.85;   // 집은 부품은 체결이 끝날 때까지 그리퍼에
+    } else { const k = (tau - F.setup - n * F.per) / Math.max(0.5, F.per * 0.4); q = lerp(plan.pts[n - 1][3], home, ease(k)); }   // 마지막 점 위(high)에서 대기 자세로 — 사이클 마무리(FASTEN_RETRACT) 안에 끝난다
+    r.fCur = q.slice(); const out = q.slice(); out[5] = wristSpin(A, out[5], spin); A.pose(...out);
+    const H = r.vla?.held ?? (r.fHeld ??= (() => {   // 자동화: 그리퍼에 집은 부품 1개 (스크류·볼트·클립·베어링)
+      const name = { DT_FAST: 'P_Screw', EA_FAST: 'P_Bolt', DT_ASSY: 'P_Clip', EA_ASSY: 'P_Bearing' }[st.id], o = name && partClone(name);
+      const g = o ? (o.scale.setScalar(1.3), o) : box(0.03, 0.02, 0.03, MAT.steel); g.position.set(0, 0.02, 0); r.tip.add(g); return g; })());
+    H.visible = held; if (r.vla) r.vla.lens.emissiveIntensity = held ? 1.2 : 4;
+  }
+
+  animVLA(r, st, busy, p, i) {
+    const V = r.vla, s = r.scale, A = r.arm;
+    const th = r.root.rotation.y, c = Math.cos(th), sn = Math.sin(th);
+    const ik = (x, y, z) => { const dx = x - r.slot.x, dz = z - r.slot.z; return A.native ? A.ik(dx * c - dz * sn, y - r.root.position.y, dx * sn + dz * c, true) : armIK(s, dx * c - dz * sn, y - r.root.position.y, dx * sn + dz * c); };
+    const wx = r.slot.x * 0.3, wz = r.slot.z * 0.22, wy = 1.3;   // 대상물(AMR 위)에서 로봇 쪽 가장자리
+    const K = r.vlaKeys ??= {
+      shelfUp: ik(V.shelf.x, V.shelf.y + 0.32, V.shelf.z), grab: ik(V.shelf.x, V.shelf.y + 0.03, V.shelf.z),
+      workUp: ik(wx, wy + 0.35, wz), ins: ik(wx, wy + 0.04, wz),
+    };
+    let q = K.shelfUp, d = 0, e = 0, held = false, scan = false;
+    if (busy) {
+      const u = (p + i * 0.07) % 1;
+      const keys = [[0, K.shelfUp], [0.1, K.grab], [0.18, K.grab], [0.3, K.shelfUp], [0.45, K.workUp], [0.55, K.ins], [0.75, K.ins], [0.85, K.workUp], [1, K.shelfUp]];
+      const j = keys.findIndex((k) => k[0] >= u), [t0, a] = keys[Math.max(0, j - 1)], [t1, b] = keys[j];
+      const k = t1 > t0 ? (u - t0) / (t1 - t0) : 1, ease = k * k * (3 - 2 * k);
+      q = a.map((v, n) => v + (b[n] - v) * ease);
+      held = u >= 0.18 && u < 0.62;
+      scan = (u > 0.03 && u < 0.18) || (u > 0.45 && u < 0.56);   // 카메라 추론(부품 인식·조립 위치 정렬)
+      if (u >= 0.55 && u < 0.75) { const f = (u - 0.55) / 0.2; if (st.type === 'screw' || st.type === 'fasten') e = f * Math.PI * 6; else d = Math.sin(f * Math.PI * 4) * 0.12; }
+    }
+    r.vlaCur = r.vlaCur ? r.vlaCur.map((v, n) => v + (q[n] - v) * 0.35) : q.slice();
+    if (A.native) { const q = r.vlaCur.slice(); q[4] += d; q[5] = wristSpin(A, q[5], e); A.pose(...q); }
+    else A.pose(r.vlaCur[0], r.vlaCur[1], r.vlaCur[2], r.vlaCur[3], d, e);
+    if (held && !V.held.visible && V.heldParts) { V.pick = (V.pick + 1) % V.heldParts.length; V.heldParts.forEach((o, k) => { o.visible = k === V.pick; }); }
+    V.held.visible = held;
+    if (held && st.item?.product && V.held.material) V.held.material.color.setHex(st.item.product === 'eaxle' ? 0x9a6bff : 0xf0a030);
+    V.lens.emissiveIntensity = scan ? 4 : 1.2;
+  }
+
+  // 피지컬AI AMMR: 작업 중 두 팔이 번갈아 플랫폼 위 부품 빈에서 집어 대상물에 조립 (빈은 선반 왕복으로 채움)
+  // 피지컬AI AMMR: 선반 앞에서 양팔로 부품을 집어(카메라 인식) 플랫폼 트레이에 담고, 셀로 돌아와 트레이의 부품을 대상물에 조립
+  animAMMRVLA(r, st, busy, t, i, lead = true) {
+    const u0 = st.ammr?.[i]; if (!u0) return;
+    r.contactAp = 0;
+    if (!busy || (u0.phase !== 'pick' && u0.phase !== 'work')) return;
+    // 접촉 작업 (RB-Y1): 대상물이 셀 중앙에 다 들어온 뒤 다가가 상체를 숙이고 두 손을 대상물에 댄다 — 작업 역할은 부품을 가져와 놓은 뒤(진행 0.4~),
+    // 고정 역할은 들어오자마자 잡는다 · 진행 0.9부터 물러나 0.97에 제자리 (대상물이 셀을 나가기 전)
+    const sm = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); }, pr = st.progress ?? 0;
+    const ap = st.item && this.sim.entryK(st) >= 1 && u0.phase === 'work' ? sm(lead ? 0.4 : 0.03, lead ? 0.48 : 0.1, pr) * (1 - sm(0.9, 0.97, pr)) : 0;
+    if (ap > 0 && r.body) {
+      const g = this.itemMeshes.get(st.item.id), box = g && contactBox(g, r.root.parent, g.userData.amr);
+      if (box && ammrContact(r, { slot: r.slot, box, ap, hold: !lead, t: t + i * 1.3 })) { r.contactAp = ap; return; }
+    }
+    if (!lead) {   // 보조 역할: 양팔로 작업물을 잡아 고정 (게이트 결정에 따라 주 작업은 반대쪽 AMMR)
+      r.vlaArm ??= [null, null];
+      r.arms.forEach((a, k) => { const sd = k ? -1 : 1, q = [sd * 0.45, 0.95, 1.35, 0.7]; r.vlaArm[k] = r.vlaArm[k] ? r.vlaArm[k].map((v, n) => v + (q[n] - v) * 0.2) : q; const c = r.vlaArm[k]; a.pose(c[0], c[1] + Math.sin(t * 2 + k) * 0.015, c[2], c[3], 0, 0); });
+      return;
+    }
+    const F = AMMR_FETCH, p = st.progress ?? 0;
+    const ease = (f) => { f = Math.min(1, Math.max(0, f)); return f * f * (3 - 2 * f); };
+    const lerp = (a, b, k) => a.map((v, n) => v + (b[n] - v) * k);
+    r.vlaArm ??= [null, null];
+    r.arms.forEach((a, k) => {
+      const sd = k ? -1 : 1;
+      const shelf = [sd * 0.22, 1.0, 1.4, 0.9], tray = [sd * 2.55, 1.05, 1.5, 0.95], work = [sd * 0.3, 0.85, 1.25, 0.75];
+      let q, twist = 0;
+      if (u0.phase === 'pick') {   // 선반 쪽: 뻗어 집기 → 플랫폼 트레이에 담기
+        const f = (p - F.driveOut) / (F.pick - F.driveOut);
+        q = f < 0.55 ? lerp(work, shelf, ease(f / 0.3)) : lerp(shelf, tray, ease((f - 0.55) / 0.45));
+      } else if (p < F.place) {    // 셀 쪽: 트레이의 부품을 집어 대상물에 놓기
+        const f = (p - F.driveIn) / (F.place - F.driveIn);
+        q = f < 0.5 ? lerp(work, tray, ease(f * 2)) : lerp(tray, work, ease((f - 0.5) * 2));
+      } else {                     // 조립·체결·포장
+        q = work.slice(); q[1] += Math.sin(t * 7 + k * 1.7) * 0.06; twist = Math.sin(t * 5 + k) * 0.6;
+      }
+      r.vlaArm[k] = r.vlaArm[k] ? r.vlaArm[k].map((v, n) => v + (q[n] - v) * 0.35) : q;
+      const c = r.vlaArm[k]; a.pose(c[0], c[1], c[2], c[3], 0, twist);
+    });
+  }
+
+  // 구분 적재장 로봇 2대: 제품 양품이 하역될 때마다(goodBy 증가) 집기 → 들어 올려 옮기기 → 다음 적재 칸에 내려놓기 → 복귀
+  animatePalletizers(parts, dts) {
+    const sim = this.sim, CYC = SINK_PICK.cycle;   // 한 사이클(시뮬레이션 초) — AMR이 도착해 시뮬레이션이 집기를 시작하면(pickStartBy) 사이클 시작
+    const lerpA = (a, b, k) => a.map((v, i) => v + (b[i] - v) * k);
+    const ease = (k) => k * k * (3 - 2 * k);
+    for (const [k, A] of Object.entries(parts.arms)) {
+      const got = sim.zone ? (sim.stats.pickStartBy?.[k] ?? 0) : (sim.stats.goodBy[k] ?? 0);
+      if (A.seen == null) A.seen = got;
+      if (got > A.seen) { A.queue += got - A.seen; A.seen = got; }
+      A.queue = Math.min(A.queue, 3);   // 고속 재생에서 밀리면 앞 사이클은 건너뛴다
+      const rz = A.sd * PALLET_ARM.z, s = PALLET_ARM.s;
+      const ik = (x, y, z) => A.arm.native ? A.arm.ik(x, y, z, true) : armIK(s, x, y, z);   // 툴을 아래로 세워 집고 놓는다 — 아래팔이 AMR 위 박스·적재 더미를 뚫지 않게
+      const home = ik(0, 1.9, -A.sd * 0.6);
+      if (!A.cyc && A.queue > 0 && parts.auto.visible) {
+        A.queue--;
+        const arr = parts.zoneStacks[k], idx = Math.max(0, Math.min(arr.length - 1, sim.fgBy[k] + (sim.zone ? 0 : -A.queue - 1)));   // 놓을 자리 = 다음 칸 (구분 적재장은 집기 전이라 아직 안 셈)
+        const b = arr[idx].position, topY = 0.9 + 0.5;   // AMR 지그 위 박스 윗면
+        const pick = ik(0, topY, -rz), pickUp = ik(0, topY + 0.6, -rz);
+        const place = ik(b.x, b.y + 0.25, b.z - rz), placeUp = ik(b.x, b.y + 0.95, b.z - rz);
+        A.cyc = { t: 0, keys: [[0, home], [0.22, pickUp], [0.32, pick], [0.42, pickUp], [0.7, placeUp], [0.8, place], [0.9, placeUp], [1, home]], placed: false, grabBase: sim.stats.grabBy?.[k] ?? 0 };
+      } else if (!A.cyc && !parts.auto.visible) A.queue = 0;
+      let q = home;
+      if (A.cyc) {
+        const c = A.cyc; c.t += dts / CYC;
+        const u = Math.min(1, c.t), i = c.keys.findIndex((kf) => kf[0] >= u);
+        const [t0, p0] = c.keys[Math.max(0, i - 1)], [t1, p1] = c.keys[i];
+        q = lerpA(p0, p1, ease(t1 > t0 ? (u - t0) / (t1 - t0) : 1));
+        A.held.visible = u >= 0.32 && u < 0.8 && (!sim.zone || (sim.stats.grabBy?.[k] ?? 0) > c.grabBase);   // 집기 전에는 박스가 AMR 위에 있다
+        if (u >= 0.8) c.placed = true;
+        if (c.t >= 1) A.cyc = null;
+      } else A.held.visible = false;
+      A.arm.pose(...q);
+    }
+  }
+
+  // 물류존·물류 대기 구역 바닥 표시 (단계별로 다시 그린다): 점선 테두리 + 옅은 바탕 + 이름
+  buildLogistics(sim) {
+    if (this.logiDeco) this.root.remove(this.logiDeco);
+    const g = this.logiDeco = put(new THREE.Group(), 0, 0, 0, this.root);
+    const F = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
+    const flat = (w, d, mat, x, z, y) => { const m = put(new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat), x, y, z, g); m.rotation.x = -Math.PI / 2; return m; };
+    const area = (x0, z0, x1, z1, rgb, title, sub, tx, tz, tw = 6) => {
+      const col = new THREE.Color(`rgb(${rgb})`), w = x1 - x0, d = z1 - z0;
+      flat(w, d, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.08, depthWrite: false }), (x0 + x1) / 2, (z0 + z1) / 2, 0.006);
+      const tape = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.85 });
+      const dash = (ax, az, bx, bz) => { const L = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.floor(L / 0.9)); for (let i = 0; i < n; i++) { const k = (i + 0.5) / n; const m = flat(az === bz ? 0.55 : 0.09, az === bz ? 0.09 : 0.55, tape, ax + (bx - ax) * k, az + (bz - az) * k, 0.018); } };
+      dash(x0, z0, x1, z0); dash(x0, z1, x1, z1); dash(x0, z0, x0, z1); dash(x1, z0, x1, z1);
+      const th = tw / 5.5, c = document.createElement('canvas'); c.width = 1024; c.height = Math.round(1024 / 5.5);
+      const x = c.getContext('2d'); x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillStyle = `rgba(${rgb},0.95)`; x.font = `900 ${c.height * 0.46}px ${F}`; x.fillText(title, c.width / 2, c.height * (sub ? 0.36 : 0.52));
+      if (sub) { let fs = c.height * 0.24; x.font = `700 ${fs}px ${F}`; while (x.measureText(sub).width > c.width * 0.94) { fs *= 0.94; x.font = `700 ${fs}px ${F}`; } x.fillStyle = 'rgba(232,237,242,0.85)'; x.fillText(sub, c.width / 2, c.height * 0.78); }
+      const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+      flat(tw, th, new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }), tx, tz, 0.02);
+    };
+    const AMBER = '245,166,35', GREEN = '61,220,132';
+    const legacy = sim.mode.key === 'traditional', agv = sim.mode.vehicleKind === 'agv';
+    // 물류존: 자재창고 랙 · AGV 상차 · 부품 랙 피킹
+    // 북쪽으로 확장 선반(A-1 유연생산 · A-2 적응가공 자재)까지 — 앞쪽 통로(z 9) 바로 앞
+    area(-46.3, XRACK.z - XRACK.len / 2 - 0.2, -40.6, 4.3 + LOGI_DZ, AMBER, '📦 물류존', `${agv ? '자재창고 · AGV 자재 상차 · 부품 랙 피킹' : '자재창고 · 지게차 자재 상차 · 부품 랙'} · 확장 선반(유연생산·적응가공 자재)`, -42.4, 3.7 + LOGI_DZ, 3.4);
+    // 입고 지게차 전용 영역: 입고 도크 ↔ 창고 랙 왼쪽 입고 칸 ↔ 대기 — 뒤쪽 통로·세로 통로와 떨어져 있어 로봇 이동 경로와 겹치지 않는다
+    { const Z = INBOUND.zone; area(Z.x0, Z.z0, Z.x1, Z.z1, GREEN, `🚚 입고 ${sim.mode.key === 'dark' ? '자율 ' : ''}지게차 전용`, '로봇 통행 금지 · 도크 ↔ 선반 입고 면', (Z.x0 + Z.x1) / 2, Z.z1 - 0.6, 4.0); }
+    // 입고 지게차 주차 칸 (대기 자리, 도크 쪽을 향해 반듯이 주차)
+    { const rc = sim.forklifts?.find((f) => f.receiver); if (rc) { const hx = rc.home.x, hz = rc.home.z, pl = new THREE.MeshBasicMaterial({ color: 0xf2f5f8 });
+      const s = Math.sign(hz - INBOUND.dockZ);   // 도크 반대쪽(건물 맨 아래) 끝선, 도크 쪽에서 들어온다
+      for (const sd of [-1, 1]) flat(0.1, 2.9, pl, hx + sd * 0.9, hz - s * 0.15, 0.02);
+      flat(1.9, 0.1, pl, hx, hz + s * 1.3, 0.02); } }
+    // 물류 대기: 부품 보충 휴머노이드 (피지컬AI)
+    // 물류존(x −46.3 ~ −40.6)과 오른쪽 로봇 통로(x −36.8~) 사이 물류 대기 줄 — 도크 2칸씩 세 묶음 (북쪽부터 A-1 · A-2 · 정밀조립), 묶음마다 바닥 구역·이름
+    for (const [zone, title, sub] of [['flex', '유연생산 물류 대기', '부품 키트 → 유연생산 투입구'], ['adapt', '적응가공 물류 대기', '부품 키트 → 적응가공 투입구'], [null, '정밀조립 물류 대기', '부품 보충 → 셀 부품 선반']]) {
+      const hs = (sim.helpers ?? []).filter((h) => (h.zone ?? null) === zone); if (!hs.length) continue;
+      const z = hs[0].home.z; area(-40.4, z - 1.3, -37.0, z + 1.5, GREEN, title, sub, -38.7, z + 1.05, 3.0);
+    }
+    // 물류 대기: AGV(레거시는 지게차) 대기·충전 — 충전 패드 4칸과 충전 기둥
+    { const a = chgLoc(0), b = chgLoc(3);   // 왼쪽 확장동 위쪽, 앞 통로(z 9) 바로 북쪽 · 이름은 북쪽(AMR 출동 차로 쪽) 빈 바닥에
+      area(a.x - 1.3, a.post - 0.5, b.x + 1.3, a.z + 1.5, GREEN, agv ? '🔋 물류 대기 · AGV 충전' : '물류 대기 · 지게차', agv ? '자재 공급 AGV 대기·자동 충전' : '자재 운반 지게차 대기 (유인)', (a.x + b.x) / 2, a.post - 1.4, 6.5); }
+    // 로봇 스테이션 (피지컬AI): 사족보행 충전 스테이션(도킹 충전기 + 상태등 — 충전 중 초록 점멸, 대기 파랑)과 바로 아래 드론 이착륙·충전 패드를 한 구역으로 표시
+    this.quadDocks = [];
+    const mq = (sim.quads ?? []).filter((q) => !q.zone);
+    if (mq.length) {
+      const xs = mq.map((q) => q.home.x), zc = mq[0].home.z, nd = (sim.drones ?? []).filter((d) => !d.zone).length;
+      const z1 = nd ? dronePad(nd - 1).z + DRONE_PAD.r + 0.5 : zc + 1.9, x0 = Math.min(...xs) - 1.2, x1 = Math.max(...xs) + 1.2;
+      area(x0, zc - 1.2, x1, z1, '90,169,255', nd ? '🔋 로봇 스테이션' : '🔋 사족보행 충전 스테이션', nd ? `사족보행 ${mq.length}대 도킹 충전 · 드론 ${nd}대 이착륙·무선 충전` : `순찰 로봇 ${mq.length}대 · 30% 이하 자동 복귀 도킹 충전`, (x0 + x1) / 2, z1 + 0.65, 4.6);
+    }
+    // 확장 Zone 로봇 스테이션 (A-1 위쪽 · A-2 아래쪽): 그 Zone 사족보행 2대 + 드론 2대
+    for (const [zone, F] of [...Object.entries(ZONE_FAC), ['insp', INSP_FAC]]) {   // + 정밀검사Zone (Zone 남쪽 끝)
+      const qs = (sim.quads ?? []).filter((q) => q.zone === zone), nd = (sim.drones ?? []).filter((d) => d.zone === zone).length, A = F.robotArea, code = zoneDef(zone).code;
+      if (!qs.length && !nd) continue;
+      const tz = zone === 'flex' ? A.z1 + 0.65 : A.z0 - 0.65;   // 이름은 통로 쪽
+      area(A.x0, A.z0, A.x1, A.z1, '90,169,255', `🔋 ${code} 로봇 스테이션`, `사족보행 ${qs.length}대 도킹 충전 · 드론 ${nd}대 이착륙·무선 충전`, (A.x0 + A.x1) / 2, tz, 4.6);
+    }
+    // 확장 Zone AMR 스테이션 (모든 단계 — 레거시는 대차): 복귀로 위 일방통행 고리의 대기 줄 · 무선 충전 (zones.js)
+    for (const [zone, F] of Object.entries(ZONE_FAC)) {
+      const A = F.station.area, Z = EXTRA_ZONES.find((x) => x.key === zone), legacy = sim.mode.key === 'traditional';
+      area(A.x0, A.z0, A.x1, A.z1, '43,179,166', `${Z.code} ${legacy ? '대차 대기' : 'AMR 스테이션'}`, `${legacy ? '대차' : 'AMR'} ${Z.amr.count}대 · 투입 대기열이 차면 여기서 대기${legacy ? '' : ' · 무선 충전'}`, (A.x0 + A.x1) / 2, zone === 'flex' ? A.z0 - 0.65 : A.z1 + 0.65, 5.2);
+    }
+    if (sim.quads?.length) {
+      for (const q of sim.quads) {
+        const d = put(new THREE.Group(), q.home.x, 0, q.home.z, g); d.rotation.y = (q.zone ? facOf(q.zone).quadHeading : Math.PI) - Math.PI;   // 도크는 로봇 뒤쪽 (통로 반대쪽)
+        put(new THREE.Mesh(new THREE.CircleGeometry(0.7, 28), new THREE.MeshStandardMaterial({ color: 0x1d2a3a, roughness: 0.7 })), 0, 0.012, 0, d).rotation.x = -Math.PI / 2;
+        put(box(0.7, 0.55, 0.28, MAT.white), 0, 0.28, 1.05, d);                 // 충전 도크 (로봇 뒤쪽)
+        put(box(0.5, 0.06, 0.4, MAT.dark), 0, 0.03, 0.75, d);                    // 충전 접점 판
+        const led = emis(0x2aa8ff, 2); put(box(0.42, 0.03, 0.12, led, false), 0, 0.57, 1.05, d);   // 도크 윗면 상태등 (앞에서도 보이게)
+        this.quadDocks.push({ q, led });
+      }
+    }
+    // 물류 대기: 출하 지게차 — 두 출하 도크(트럭) 사이 벽 앞
+    { const sh = sim.forklifts?.find((f) => !f.receiver)?.home ?? { x: 31.5, z: -25 }, fx = sh.x, fz = sh.z; area(fx - 1.3, fz - 2.1, fx + 1.3, fz + 1.3, GREEN, '출하 대기', sim.mode.key === 'dark' ? '자율 지게차' : '출하 지게차 (유인)', fx, fz + 1.95, 3.2); }
+  }
+
+  // 화물트럭: 시뮬레이션 트럭 목록과 모델을 맞추고, 위치·방향·뒷문·적재 팔레트·라벨을 갱신한다
+  updateTrucks(t, rdt) {
+    const yard = this.sim.yard; if (!yard) return;
+    const all = [...yard.trucks, ...(this.sim.inbound?.trucks ?? [])];
+    const live = new Set(all.map((k) => k.id));
+    for (const [id, tv] of this.truckViews) if (!live.has(id)) { this.dyn.remove(tv.g); tv.lbl.removeFromParent(); tv.el.remove(); this.truckViews.delete(id); }
+    const STATE = { arrive: '입차', wait: '대기 · 빈 도크 기다림', toDock: '도크 후진 접안', dock: '상차', depart: '만재 출발' };
+    const IN_STATE = { arrive: '입차', wait: '대기 · 입고 도크 기다림', toDock: '입고 도크 후진 접안', dock: '하차', depart: '하차 완료 출발' };
+    for (const k of all) {
+      let tv = this.truckViews.get(k.id);
+      if (!tv) {
+        const g = makeTruck(+k.id.split('-')[1] || 0);
+        const el = document.createElement('div'); el.className = 'v-label truck';
+        const lbl = new CSS2DObject(el); lbl.position.set(0, 4.6, 0); g.add(lbl); lbl.visible = this.labelsOn ?? true;
+        this.dyn.add(g); tv = { g, el, lbl, yaw: k.heading }; this.truckViews.set(k.id, tv);
+      }
+      tv.g.position.set(k.x, 0, k.z);
+      tv.yaw = lerpAngle(tv.yaw, k.heading, Math.min(1, rdt * 10)); tv.g.rotation.y = tv.yaw;
+      const ud = tv.g.userData, open = k.state === 'dock';
+      ud.doors.forEach((d, i) => { const want = open ? (i ? -1 : 1) * 1.45 : 0; d.rotation.y += (want - d.rotation.y) * Math.min(1, rdt * 3); });
+      const rev = k.moving && k.route[0]?.rev;
+      ud.tail.forEach((m) => { m.material.emissive.setHex(rev ? 0xffffff : 0xff3030); m.material.emissiveIntensity = rev ? (Math.sin(t * 8) > 0 ? 2.5 : 0.4) : k.moving ? 1.6 : 0.8; });
+      const ps = k.pallets ?? [];
+      ud.pallets.forEach((p, i) => { p.pg.visible = i < ps.length; if (i < ps.length) p.cartons.forEach((c) => (c.material = ps[i] === 'eaxle' ? MAT.crate : ps[i] === 'raw' ? MAT.raw : ps[i] === 'parts' ? MAT.partsBin : MAT.carton)); });
+      tv.el.innerHTML = k.inbound ? `${k.id}<em>${IN_STATE[k.state] ?? k.state}${k.state !== 'depart' ? ` · 팔레트 ${ps.length} (원자재 ${ps.filter((x) => x === 'raw').length} · 부품 ${ps.filter((x) => x === 'parts').length})` : ''}</em>`
+        : `${k.id}<em>${STATE[k.state] ?? k.state}${k.state === 'dock' || k.state === 'depart' ? ` ${k.load}/${YARD.cap}` : ''}</em>`;
+    }
+  }
+
+  updateLabels() {
+    const sim = this.sim;
+    for (const sv of this.stationViews) {
+      const st = sv.st;
+      sv.el.querySelector('.nm span').textContent = st.name;
+      const chip = sv.el.querySelector('.chip');
+      chip.textContent = ST_LABEL[st.state] ?? st.state;
+      // 상위 명령으로 걸린 속도 제한·오버라이드
+      const k = st.cmd;
+      if (k?.safe) chip.textContent += ' · 감속 25%';
+      else if (k && k.override !== 1) chip.textContent += ` · 속도 ${Math.round(k.override * 100)}%`;
+      chip.className = 'chip s-' + st.state;
+      const hp = sv.el.querySelector('.hp');
+      if (st.standby) {
+        hp.style.display = 'none';
+        chip.textContent = `미사용 · ${st.def.usedBy.label} 시나리오`;
+      } else if (st.def.cycle) {
+        hp.style.display = '';
+        if (st.parts != null && st.parts <= sim.mode.partsReorder) chip.textContent += ` · 부품 ${st.parts}`;
+        const i = hp.querySelector('i');
+        i.style.width = st.health.toFixed(0) + '%';
+        i.style.background = st.health > 60 ? '#3ddc84' : st.health > 40 ? '#f5b82e' : '#ff5a5a';
+      } else {
+        hp.style.display = 'none';
+        chip.textContent += st.type === 'source' ? ` · 재고 ${sim.rawStock}` : sim.zone ? ` · 도어트림 ${sim.fgBy.doortrim} · e-axle ${sim.fgBy.eaxle}` : ` · ${sim.fgStock}/${FG_CAP}`;
+      }
+      const gd = sv.el.querySelector('.gd');
+      if (gd) { const d = st.gate, c = st.gateCount ?? {}; gd.textContent = `🚦 ${d?.product && st.item?.id === d.id ? d.text : '게이트 대기'} · 누적 도어트림 ${c.doortrim ?? 0} · e-axle ${c.eaxle ?? 0}`; gd.className = `gd ${st.item?.id === d?.id ? d?.product ?? '' : ''}`; }
+      sv.el.classList.toggle('sel', this.selected === st.id);
+    }
+  }
+
+  // 중앙 관제 화면 (2016×448 = 18×4m): 왼쪽 — 핵심 지표·셀 상태·AI 판단, 오른쪽 — 이벤트 알람 · 처리 과정 · 결과
+  drawScreen(k, agentLine, data = null) {
+    if (data) this.dataInfo = data;
+    const c = this.screenCanvas, g = c.getContext('2d'), sim = this.sim, F = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
+    const blink = Math.floor(performance.now() / 600) % 2 === 0;
+    const fit = (txt, w) => { let t = String(txt); if (g.measureText(t).width <= w) return t; while (t.length > 1 && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
+    const mmss = (sec) => { sec = Math.max(0, Math.round(sec)); return sec >= 3600 ? `${Math.floor(sec / 3600)}시간 ${Math.floor(sec / 60) % 60}분` : sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`; };
+    g.fillStyle = '#04121f'; g.fillRect(0, 0, c.width, c.height);
+    g.strokeStyle = 'rgba(55,232,255,0.10)'; g.lineWidth = 1;
+    for (let x = 0; x < c.width; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, c.height); g.stroke(); }
+    // ── 왼쪽 (x 26~926): 지표 · 셀 상태 · 누적 데이터 · AI 학습 · AI 판단
+    g.fillStyle = '#37e8ff'; g.font = `800 28px ${F}`; g.textBaseline = 'alphabetic';
+    g.fillText(`DIGITAL TWIN · ${sim.mode.label}`, 26, 38);
+    const s0 = Math.floor(sim.time) + 8 * 3600; g.fillStyle = '#7fb8cc'; g.font = `600 21px ${F}`; g.textAlign = 'right';
+    g.fillText([s0 / 3600 % 24, s0 / 60 % 60, s0 % 60].map((v) => String(Math.floor(v)).padStart(2, '0')).join(':'), 926, 38); g.textAlign = 'left';
+    const tiles = [['UPH', k.uphRecent.toFixed(0)], ['OEE', (k.OEE * 100).toFixed(1) + '%'], ['WIP', k.wip], ['POWER', k.powerKW.toFixed(0) + 'kW']];
+    tiles.forEach(([a, b], i) => {
+      const x = 26 + i * 226;
+      g.fillStyle = 'rgba(55,232,255,0.08)'; g.fillRect(x, 50, 212, 72);
+      g.fillStyle = '#7fb8cc'; g.font = `600 18px ${F}`; g.fillText(a, x + 12, 72);
+      g.fillStyle = '#ffffff'; g.font = `800 36px ${F}`; g.fillText(fit(b, 190), x + 12, 112);
+    });
+    // 셀 상태: 한 줄(최대 6칸, 넘치면 두 줄)
+    const P = sim.processing, per = Math.min(6, P.length) || 1, rows = Math.ceil(P.length / per), cw = 900 / per, rh = rows > 1 ? 44 : 60;
+    P.forEach((st, i) => {
+      const x = 26 + (i % per) * cw, y = 134 + Math.floor(i / per) * rh;
+      const col = { BUSY: '#3ddc84', DOWN: '#ff5a5a', ESTOP: '#ff5a5a', PSTOP: '#f5b82e', MAINT: '#f5b82e', BLOCKED: '#f5b82e', NOPARTS: '#f5b82e' }[st.state] ?? '#5b7080';
+      g.fillStyle = col; g.fillRect(x, y, cw - 10, 6);
+      g.fillStyle = '#cfe6f0'; g.font = `700 ${rows > 1 ? 17 : 19}px ${F}`; g.fillText(fit(st.name, cw - 12), x, y + 26);
+      if (rows === 1) { g.fillStyle = '#7fb8cc'; g.font = `500 16px ${F}`; g.fillText(fit(`${ST_LABEL[st.state] ?? st.state} · 건강도 ${st.health.toFixed(0)}%`, cw - 12), x, y + 50); }
+      else { g.fillStyle = col; g.font = `500 14px ${F}`; g.textAlign = 'right'; g.fillText(`${st.health.toFixed(0)}%`, x + cw - 12, y + 26); g.textAlign = 'left'; }
+    });
+    // 누적 데이터 · AI 학습 (두 칸)
+    const BY = 206, BH = 196, num = (n) => Math.round(n).toLocaleString('ko-KR');
+    const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(0)} KB`);
+    const box = (x, w, title, color, rowsTxt) => {
+      g.fillStyle = 'rgba(55,232,255,0.06)'; g.fillRect(x, BY, w, BH); g.fillStyle = color; g.fillRect(x, BY, w, 3);
+      g.font = `800 20px ${F}`; g.fillStyle = color; g.fillText(title, x + 12, BY + 28);
+      rowsTxt.forEach(([a, b, cl], i) => {
+        const y = BY + 56 + i * 28;
+        g.font = `500 16px ${F}`; g.fillStyle = '#7fb8cc'; g.fillText(fit(a, 150), x + 12, y);
+        g.font = `700 17px ${F}`; g.fillStyle = cl ?? '#e8edf2'; g.fillText(fit(b, w - 172), x + 164, y);
+      });
+    };
+    const D = this.dataInfo ?? {}, H = D.hub ?? {}, ep = this.epRec, V = sim.vla, A = sim.aios;
+    const epB = ep?.dataBytes ?? 0, aiB = A?.on ? A.bytes ?? 0 : 0, msgB = D.bytes ?? 0;
+    box(26, 440, '🗄 누적 데이터', '#37e8ff', [
+      ['총 데이터량', `${size(msgB + epB + aiB)} · ${mmss(sim.time)} 수집`],
+      ['설비 데이터 포인트', `${num(H.points ?? 0)}개 (자산 ${H.assets ?? 0} · 필드 ${H.fields ?? 0})`],
+      ['OPC UA·AAS 메시지', `${num(D.msgs ?? 0)}건 · ${size(msgB)}`],
+      ['이벤트 기록', `${num(H.events ?? 0)}건 · 인시던트 ${sim.orch?.seq ?? 0}건`],
+      ...(sim.mode.key === 'dark' ? [['VLA 에피소드', `${num(ep?.total ?? 0)}개 · 약 ${size(epB)}`], ['AIOS 운영 샘플', `${num(A?.total ?? 0)}개 · 묶음 ${A?.chunks?.length ?? 0} · ${size(aiB)}`]] : [['AI 학습 데이터', '피지컬AI 단계에서 수집']]),
+    ]);
+    const PH = { train: '학습 중', eval: '평가 중', canary: '카나리 배포', rollout: 'OTA 배포 중', twin: '트윈 검증', shadow: '섀도 모드', verify: '배포 효과 확인' };
+    const vJob = V?.job, aJob = A?.job, vLast = V?.jobs?.find((x) => x !== vJob), aLast = A?.jobs?.find((x) => x !== aJob);
+    const res = (j, kind) => !j ? '아직 없음' : j.phase === 'done' ? `${j.label} ${kind === 'v' ? `검증 ${j.val}% · ` : ''}배포 완료` : j.phase === 'rejected' ? `${j.label} 기준 미달 · 배포 안 함` : j.phase === 'rollback' ? `${j.label} 롤백` : `${j.label} ${PH[j.phase] ?? j.phase}`;
+    const okRate = V?.allEps ? Math.round((V.okEps / V.allEps) * 100) : null;
+    box(486, 440, '🧠 AI 학습', '#b89bff', sim.mode.key !== 'dark' ? [
+      ['AI 학습', '피지컬AI 단계에서 운영'], ['현재 단계', `${sim.mode.label} — 데이터 수집·관제`], ['VLA (로봇 추론)', '규칙 기반 로봇 프로그램'], ['AIOS (공장 운영)', 'MES 규칙 기반 운영'],
+    ] : [
+      ['VLA 로봇 모델', `${V?.label(V.latest) ?? 'v1.0'} · 에피소드 성공률 ${okRate ?? '-'}%`],
+      ['VLA 학습', vJob ? `${vJob.label} ${PH[vJob.phase] ?? vJob.phase}${vJob.phase === 'train' ? ` ${vJob.epoch}/${vJob.epochs} 에폭 · loss ${vJob.loss.at(-1) ?? '-'}` : vJob.phase === 'rollout' ? ` ${vJob.rollout.length}대` : ''}` : `대기 · 새 에피소드 ${V?.newEps ?? 0}/${V?.trainAt ?? 0}`, vJob ? '#f5d36b' : null],
+      ['VLA 최근 결과', res(vLast, 'v'), vLast?.phase === 'done' ? '#7dffb0' : null],
+      ['AIOS 운영 모델', `${A?.version ?? 'v1.0'} · 모델 ${A?.models?.length ?? 1}개 등록`],
+      ['AIOS 학습', aJob ? `${aJob.label} ${PH[aJob.phase] ?? aJob.phase}${aJob.phase === 'train' ? ` ${aJob.epoch ?? 0}/${aJob.epochs} 에폭` : ''}` : `대기 · 새 샘플 ${A?.newSamples ?? 0}/${A?.trainAt ?? 0}`, aJob ? '#f5d36b' : null],
+      ['AIOS 최근 결과', res(aLast, 'a'), aLast?.phase === 'done' ? '#7dffb0' : null],
+    ]);
+    g.fillStyle = '#37e8ff'; g.font = `600 18px ${F}`;
+    g.fillText(fit('AI 판단 ▸ ' + agentLine, 900), 26, 432);
+    // ── 오른쪽: 이벤트 알람 · 처리 과정 · 결과 (x 960~1996)
+    const X = 960, W = 1036, inc = sim.orch?.incidents ?? [];
+    const open = inc.filter((i) => i.status === 'open').sort((a, b) => prioOf(a) - prioOf(b) || a.t0 - b.t0), done = inc.filter((i) => i.status !== 'open' && sim.time - (i.tEnd ?? 0) < 600);
+    g.fillStyle = 'rgba(55,232,255,0.25)'; g.fillRect(X - 16, 14, 2, 420);
+    g.font = `800 28px ${F}`; g.fillStyle = open.length ? (blink ? '#ff5a5a' : '#ff9a3d') : '#3ddc84';
+    g.fillText(open.length ? `🚨 이벤트 알람 ${open.length}건 처리 중` : '✅ 이벤트 없음 · 정상 운영', X, 42);
+    g.font = `600 19px ${F}`; g.fillStyle = '#7fb8cc'; g.textAlign = 'right';
+    g.fillText(fit(`${sim.orch?.name ?? ''} · 최근 10분 종료 ${done.length}건`, 520), X + W, 42); g.textAlign = 'left';
+    const list = [...open, ...done].slice(0, 3);
+    if (!list.length) {
+      g.fillStyle = '#5b7080'; g.font = `500 22px ${F}`;
+      g.fillText('설비 고장 · 자재 공급 차질 · 현장 이벤트가 생기면 여기에 알람과 처리 과정, 결과가 표시됩니다', X, 120);
+    }
+    const CH = 120;
+    list.forEach((it, n) => {
+      const y = 56 + n * (CH + 6), isOpen = it.status === 'open', T = INCIDENT_TYPES[it.type] ?? { label: it.type, icon: '•' };
+      const accent = isOpen ? (blink ? '#ff5a5a' : '#ff9a3d') : '#3ddc84';
+      g.fillStyle = isOpen ? 'rgba(255,70,70,0.10)' : 'rgba(61,220,132,0.07)'; g.fillRect(X, y, W, CH);
+      g.fillStyle = accent; g.fillRect(X, y, 7, CH);
+      if (isOpen) { g.strokeStyle = accent; g.lineWidth = 2; g.strokeRect(X + 1, y + 1, W - 2, CH - 2); }
+      // 1줄: 종류 · 제목 · 경과/소요
+      g.font = `800 23px ${F}`; g.fillStyle = '#ffffff';
+      g.fillText(fit(`${T.icon} [P${prioOf(it)}] #${it.id} ${it.title}`, W - 300), X + 20, y + 29);   // 문제 해결 우선순위
+      g.textAlign = 'right'; g.font = `700 20px ${F}`; g.fillStyle = accent;
+      g.fillText(isOpen ? `진행 중 · 경과 ${mmss(sim.time - it.t0)}` : `완료 · 소요 ${mmss((it.tEnd ?? sim.time) - it.t0)}`, X + W - 14, y + 29); g.textAlign = 'left';
+      // 2줄: 처리 단계 진행 표시 (감지 → … → 완료 확인)
+      const kinds = new Set(it.steps.map((st) => st.kind)), stages = STAGES.filter((sg) => sg.key !== 'self' || kinds.has('self'));
+      const last = stages.reduce((a, sg, i) => (kinds.has(sg.key) ? i : a), -1), sw = (W - 34) / stages.length;
+      stages.forEach((sg, i) => {
+        const x = X + 20 + i * sw, on = kinds.has(sg.key) || i < last, cur = isOpen && i === last;
+        g.fillStyle = on ? (cur ? accent : isOpen ? '#37e8ff' : '#3ddc84') : 'rgba(127,184,204,0.18)'; g.fillRect(x, y + 40, sw - 8, 7);
+        g.font = `${cur ? 800 : 600} 16px ${F}`; g.fillStyle = on ? '#e8edf2' : '#5b7080'; g.fillText(fit(sg.label, sw - 10), x, y + 66);
+      });
+      // 3줄: 진행 중이면 최근 처리 과정, 끝났으면 결과
+      const st = it.steps[it.steps.length - 1], LANE = { field: '현장', cell: '셀', orch: '오케스트레이터', exec: '실행' };
+      g.font = `600 19px ${F}`; g.fillStyle = isOpen ? '#cfe6f0' : '#7dffb0';
+      g.fillText(fit(isOpen ? `▸ ${LANE[st?.lane] ?? ''} · ${st?.text ?? '감지됨'}` : `결과 ▸ ${st?.text ?? '처리 완료'}`, W - 36), X + 20, y + 91);
+      g.font = `500 16px ${F}`; g.fillStyle = '#7fb8cc';
+      const prev = it.steps.slice(-3, -1).map((x) => x.text).join('  ›  ');
+      g.fillText(fit(`${T.label}${it.source ? ` · ${it.source}` : ''}${prev ? `  |  ${prev}` : ''}`, W - 36), X + 20, y + 113);
+    });
+    const more = open.length + done.length - list.length;
+    if (more > 0) { g.font = `600 18px ${F}`; g.fillStyle = '#7fb8cc'; g.textAlign = 'right'; g.fillText(`외 ${more}건 — 하단 오케스트레이터 버튼에서 전체 흐름 보기`, X + W, 444); g.textAlign = 'left'; }
+    this.screenTex.needsUpdate = true;
+  }
+}
+
+// 경로 앞뒤를 잘라낸 점 목록 (코너 유지). endTrim이 음수면 끝을 연장한다.
+function trimPath(pts, startTrim, endTrim) {
+  const L = pathLength(pts);
+  const s0 = startTrim, s1 = L - endTrim;
+  const out = [pointAt(pts, s0)];
+  let acc = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    acc += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+    if (acc > s0 && acc < s1) out.push({ ...pts[i] });
+  }
+  if (s1 > L) {
+    const a = pts[pts.length - 2], b = pts[pts.length - 1], seg = Math.hypot(b.x - a.x, b.z - a.z);
+    out.push({ x: b.x + ((b.x - a.x) / seg) * (s1 - L), z: b.z + ((b.z - a.z) / seg) * (s1 - L) });
+  } else out.push(pointAt(pts, s1));
+  return out;
+}
+
+function lerpAngle(a, b, k) {
+  let d = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * k;
+}
+
+// 확장 Zone(js/zones.js — 유연생산Zone · 적응가공Zone)이 정밀조립Zone과 같은 재질·로봇·설비 모델을 쓰도록 내보낸다
+export const KIT = {
+  std, emis, mesh, box, cyl, put, MAT, BELT_Y, AMMR, ZONE_COLOR,
+  makeRobot, ammrContact, contactBox, surfaceY, supportBox, pointWork, alignTool, makeSparks, stepSparks, makeWorker, makeHumanoid, makeCarrierAMR, makeStackLight, cellBase, idPlate, armIK, makeArm, ARM_JOINTS,
+  buildWeld, buildSort, buildGate, buildVision, fillBins,
+};
