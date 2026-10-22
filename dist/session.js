@@ -1,3 +1,5 @@
+import {makeProduct} from './shapes.js';
+import {KIT} from './original/factory.js';
 import {InspZone,INSP} from './original/inspzone.js';
 
 export const PRODUCTS=INSP.products;
@@ -39,6 +41,7 @@ export class InspectionSession extends InspZone {
     this.emit('info','샘플 접수 요청 · '+id,{obs:INSP.zones[zone]+' / '+PRODUCTS[product][1],dec:'검사 레시피: '+ROUTES[product].map(k=>CELL_SHORT[k]).join(' → '),act:'검사 AMR 배차 대기'});
     return true;
   }
+  attach(c){const m=makeProduct(c.item.product);m.position.set(0,KIT.BELT_Y-.02,0);c.g.add(m);c.pm=m;}
   sampleTick(){} // Production throughput is outside this independent Zone.
   go(c,pts,state){
     if(state==='out'){

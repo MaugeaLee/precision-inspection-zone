@@ -16,8 +16,8 @@ Node.js가 있는 환경에서 이 폴더의 터미널을 열고 `node server.mj
 - A-4-5: AI정밀검사(QMS) 통합 OCS 시뮬레이션 Cell
 - 피지컬AI 전용. 자동화 모드 선택 삭제
 - ZEISS ABIS III, AIMAX, O-INSPECT 8/6/3, MMZ M 개념 모델
-- 두산 H2017/H2515 검사 협동로봇, 현대 HDR50-22/HDR80-22 이적재 로봇 선택
-- 제조사 CAD가 아닌 코드 기반 개념 형상·동작. 실제 치수·관절 한계·가반하중 검증 모델이 아님
+- 두산 H2017/H2515 검사 협동로봇 선택, 현대 HDR50-22 이적재 로봇
+- 두산 H2017/H2515 및 현대 HDR50-22는 공식 공개 메시와 URDF 관절 원점·축·제한값을 반영. HDR80-22는 공식 형상 미확보로 선택 비활성화. 가반하중·충돌·센서 자세 검증 모델은 아님
 - AMR 3대·검사 상태머신은 원본을 기반으로 함
 - 제품별 경로: 후드·도어·도어트림은 VIS→SCAN, e-axle은 VIS→OINS, 유압블록·리어커버는 MMZ→OINS
 - 정상 OK, 불확실→O-INSPECT 재측정→OK, NG→보류·선행공정 환류 요청
@@ -54,3 +54,15 @@ Space는 재생/일시정지, Esc는 전체 보기입니다. 초기 시연에는
 셀 명칭: 연구개발계획서 부록 최종제출본 PDF 55~56쪽 및 78쪽. 장비 모델: 사용자 지정. O-INSPECT는 A-4-1, MMZ M은 A-4-2 하위 장비로 배치한 시연 구성안이며 사업계획서의 확정 배치를 뜻하지 않습니다. MMZ M은 문형 CMM으로 초음파 센서를 대체하지 않습니다. 4족·드론은 제조사 미지정 개념 모델입니다.
 
 모델 참고: https://www.zeiss.com/metrology/en/systems/optical-3d/automated-solutions/zeiss-abis-iii.html , https://www.zeiss.com/metrology/en/systems/cmms/large-cmms/mmz-m.html , https://www.doosanrobotics.com/en/product-solutions/product/h-series/h2515/ , https://hd-hyundairobotics.com/biz/product/detail/14
+
+
+## 로봇·제품 형상 수정
+
+- `shapes.js`: 공식 메시와 URDF의 관절 계층·링크 길이를 유지하고 6축 위치 IK를 적용합니다. 로봇 링크를 늘이거나 다른 모델로 확대 대체하지 않습니다.
+- `models.html`: 로봇 3종과 제품 6종의 개별 확대·회전 확인 화면.
+- 제품은 원본 메타팩토리의 GLB 6종을 그대로 사용합니다. 검사 대상인 가공 완료 상태를 선택하며 유압블록 Raw 그룹은 숨깁니다. AMR·운반·지그에서 동일 제품을 표시합니다. 실물 CAD가 아닙니다.
+- 두산 공식 소스: https://github.com/DoosanRobotics/doosan-robot2
+- 현대 공식 소스: https://github.com/hyundai-robotics/hdr_description
+- 커밋: `dist/assets/models/official/sources.json`. BSD-3-Clause 고지를 함께 제공합니다.
+- 변환: 공식 DAE/STL을 GLB로 변환, URDF visual 원점·0.001 단위 변환·관절 축·범위 유지. Z-up에서 Y-up으로 좌표축 회전만 적용합니다.
+- 검증: 3개 로봇별 대표 3개 TCP 목표의 유한값·관절 범위 및 30 mm 이하 시각화 IK 잔차 확인, 제품 6종 유효 경계 크기 확인. 이는 충돌·센서 방향·실장비 정확도 검증이 아닙니다. UI에서 9개 모델을 시각 확인하고 정상/NG/재측정 경로를 확인했습니다.

@@ -1,3 +1,4 @@
+import {loadShapes} from './shapes.js';
 import {PLAN,PlanScene} from './plan.js';
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
@@ -37,6 +38,7 @@ async function init(){
     const loader=new GLTFLoader();
     try{await Promise.all(['amr'].map(async k=>{const gltf=await loader.loadAsync('./assets/models/'+k+'.glb');gltf.scene.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});RENDER.assets[k]=gltf.scene;}));RENDER.loaded=true;}
     catch(e){console.warn('기본 도형 모델로 전환합니다.',e);RENDER.loaded=false;toast('기본 장비 모델로 실행합니다.');}
+    await loadShapes();
     engine=new InspectionSession(scene);
     planScene=new PlanScene(engine,scene,focusPlan);
     engine.onEvent(()=>renderLog());
@@ -97,7 +99,7 @@ function seedDemo(){engine.enqueue('hood','ok');engine.enqueue('hblock','uncerta
 function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재생';$('play').setAttribute('aria-label',running?'일시정지':'재생');}
 function focusCell(id){
   if(!engine.cells[id])return;selected=id;planScene.focus=id;const c=engine.cells[id];
-  cameraGoal={target:new THREE.Vector3(c.def.x,.7,c.def.z),position:new THREE.Vector3(c.def.x+10,10,c.def.z+8)};
+  cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-1),position:new THREE.Vector3(c.def.x+5.5,5,c.def.z+4.5)};
   document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id));updateFocus();
 }
 function updateFocus(){
@@ -140,7 +142,7 @@ function showHistory(){
   $('export-csv').onclick=()=>{const columns=['sample_id','product_id','product','source_zone','time_seconds','result','remeasured','route','scenario','source'];const quote=v=>'"'+String(v??'').replaceAll('"','""')+'"';download(new Blob(['\ufeff'+[columns.join(','),...engine.records.map(r=>columns.map(k=>quote(r[k])).join(','))].join('\r\n')],{type:'text/csv;charset=utf-8'}),'QIS_inspection_history.csv');};
   $('export-json').onclick=()=>download(new Blob([JSON.stringify({source:'simulation',mode,records:engine.records,trace:engine.trace,events:engine.events},null,2)],{type:'application/json'}),'QIS_inspection_trace.json');
 }
-function showAbout(){openModal('정밀검사존 · 구성 및 출처',`<p>메타팩토리의 정밀검사존을 독립 실행 화면으로 분리했습니다. 사업계획서의 A-4-1~A-4-5 다섯 셀로 구성하고 공용 반입 구역과 검사 장비를 하위 공정으로 분리했습니다. AMR·판정 상태머신은 원본을 활용합니다.</p><h3>5개 셀 · 장비 구성</h3>${PLAN.map(p=>`<p><b>${p.id} ${p.name}</b><br>${p.description}</p>`).join('')}<p>표면·피처 검사: 두산 H2017 / H2515. 검사물 이적재: 현대 HDR50-22 / HDR80-22. 제조사 CAD를 사용하지 않은 개념 모델입니다. 장비의 셀 내 배치와 검사 경로는 시연 구성안입니다.</p><h3>검사 경로</h3><table><tr><th>제품</th><th>검사 경로 (접수·판정 공통)</th></tr><tr><td>후드 · 도어 · 도어트림</td><td>비전검사 → 3D 스캔·UT</td></tr><tr><td>e-axle</td><td>비전검사 → O-INSPECT</td></tr><tr><td>유압블록 · 리어커버</td><td>MMZ M → O-INSPECT</td></tr></table><h3>시연 범위</h3><p>검사 동작·OK/불확실/NG·설비 이상·복구·품질 환류 요청을 모사합니다. 실제 검사장비·PLC·MQTT·AI 모델과 연결되어 있지 않습니다. 실제 도입 장비의 수량·정확도·검출 성능을 나타내지 않습니다.</p><p>불확실 판정은 O-INSPECT 재측정 후 재판정합니다. NG는 보류·리워크 검토·선행공정 보정 요청으로 기록하며, 생산 Zone의 실제 재작업 완료를 모사하지 않습니다.</p><h3>조작·영상 저장</h3><p>드래그: 회전 / 휠: 확대 / 오른쪽 드래그: 이동 / Space: 재생·일시정지 / Esc: 전체 보기. 녹화는 3D 장면·셀 라벨·시각·판정 실적을 포함한 1920×1080 WebM 영상으로 저장합니다.</p><h3>출처</h3><p><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">피지컬AI 실증 메타팩토리 · Jin Park</a><br><a href="https://github.com/theuniversepark/meta-factory" target="_blank" rel="noopener">원본 공개 저장소</a> · package.json ISC 표기<br>three.js · MIT · <a href="./vendor/three/LICENSE" target="_blank" rel="noopener">라이선스</a><br><a href="./assets/ORIGINAL_OPEN_SOURCE.md" target="_blank" rel="noopener">원본 오픈소스 고지</a> · <a href="./assets/source.json" target="_blank" rel="noopener">참조 소스 버전</a></p>`);}
+function showAbout(){openModal('정밀검사존 · 구성 및 출처',`<p>메타팩토리의 정밀검사존을 독립 실행 화면으로 분리했습니다. 사업계획서의 A-4-1~A-4-5 다섯 셀로 구성하고 공용 반입 구역과 검사 장비를 하위 공정으로 분리했습니다. AMR·판정 상태머신은 원본을 활용합니다.</p><h3>5개 셀 · 장비 구성</h3>${PLAN.map(p=>`<p><b>${p.id} ${p.name}</b><br>${p.description}</p>`).join('')}<p>표면·피처 검사: 두산 H2017 / H2515. 검사물 이적재: 현대 HDR50-22. 두산 H2017·H2515와 현대 HDR50-22는 제조사 공개 메시·URDF 기반입니다. HDR80-22는 공식 형상 미확보로 선택을 보류했습니다. 제품은 원본의 제품별 시각화 모델이며 실물 CAD가 아닙니다. 장비의 셀 내 배치와 검사 경로는 시연 구성안입니다.</p><h3>검사 경로</h3><table><tr><th>제품</th><th>검사 경로 (접수·판정 공통)</th></tr><tr><td>후드 · 도어 · 도어트림</td><td>비전검사 → 3D 스캔·UT</td></tr><tr><td>e-axle</td><td>비전검사 → O-INSPECT</td></tr><tr><td>유압블록 · 리어커버</td><td>MMZ M → O-INSPECT</td></tr></table><h3>시연 범위</h3><p>검사 동작·OK/불확실/NG·설비 이상·복구·품질 환류 요청을 모사합니다. 실제 검사장비·PLC·MQTT·AI 모델과 연결되어 있지 않습니다. 실제 도입 장비의 수량·정확도·검출 성능을 나타내지 않습니다.</p><p>불확실 판정은 O-INSPECT 재측정 후 재판정합니다. NG는 보류·리워크 검토·선행공정 보정 요청으로 기록하며, 생산 Zone의 실제 재작업 완료를 모사하지 않습니다.</p><h3>조작·영상 저장</h3><p>드래그: 회전 / 휠: 확대 / 오른쪽 드래그: 이동 / Space: 재생·일시정지 / Esc: 전체 보기. 녹화는 3D 장면·셀 라벨·시각·판정 실적을 포함한 1920×1080 WebM 영상으로 저장합니다.</p><h3>출처</h3><p><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">피지컬AI 실증 메타팩토리 · Jin Park</a><br><a href="https://github.com/theuniversepark/meta-factory" target="_blank" rel="noopener">원본 공개 저장소</a> · package.json ISC 표기<br>three.js · MIT · <a href="./vendor/three/LICENSE" target="_blank" rel="noopener">라이선스</a><br><a href="./assets/ORIGINAL_OPEN_SOURCE.md" target="_blank" rel="noopener">원본 오픈소스 고지</a> · <a href="./assets/source.json" target="_blank" rel="noopener">참조 소스 버전</a></p>`);}
 function startRecording(){
   if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){toast('이 브라우저는 영상 녹화를 지원하지 않습니다.');return;}
   recordCanvas=document.createElement('canvas');recordCanvas.width=1920;recordCanvas.height=1080;recordContext=recordCanvas.getContext('2d');drawRecording();
