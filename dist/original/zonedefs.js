@@ -201,9 +201,9 @@ export const INSP_AREA = { x0: 31.6, x1: 47.6, z0: -30.5, z1: 7.5 };
 export const INSP_CELLS = {
   DOCK: { no: '0', type: 'dock', label: '시료 접수·도킹', use: 'AMR 도킹 · 제품 ID·공정이력 확인 · 검사 레시피 Task 생성', x: 35, z: -29, cycle: 8 },
   VIS: { no: '1', type: 'vision', label: '로봇형 비전 검사 Cell', use: 'ZEISS ABIS III 표면비전 · ZEISS AIMAX 피처비전 · 두산 H2017 / H2515', x: 35, z: -23, cycle: 40, robots: 0 },
-  SCAN: { no: '2', type: 'scan', label: '3D 스캔·초음파 용접검사 Cell', use: 'ScanBox 3D 형상·치수 · 용접부 초음파(UT) NDT', x: 43.5, z: -23, cycle: 90, robots: 0 },
+  SCAN: { no: '2', type: 'scan', label: '3D·UT·X-ray 복합검사 Cell', use: 'ScanBox 8160/5130 · UT/NDT · 인라인 X-ray (예시 레시피)', x: 43.5, z: -23, cycle: 90, robots: 0 },
   OINS: { no: '3', type: 'oins', label: 'O-INSPECT 정밀 재측정', use: 'ZEISS O-INSPECT 8/6/3 · 현대 HDR50-22 공식 메시 · 이적재 · 접촉·광학 정밀측정', x: 35, z: -15, cycle: 110, robots: 0 },
-  MMZ: { no: '4', type: 'atos', label: 'ZEISS MMZ M 문형 3차원 측정', use: '문형 CMM 정밀 치수측정 · 검사 지그 안착', x: 43.5, z: -15, cycle: 60, robots: 0 },
+  MMZ: { no: '4', type: 'atos', label: 'ZEISS MMZ M 문형 3차원 측정', use: '문형 CMM 정밀 치수측정 · 검사 지그 안착', x: 35, z: -8, cycle: 60, robots: 0 },
   JUDGE: { no: '5', type: 'judge', label: 'AI 판정·결과 버퍼', use: 'OK · 판정 불확실 · NG → QMS 저장 · 선행공정 환류', x: 43.5, z: -5, cycle: 10 },
 };
 // 시설 코드용 Zone 보기 (드론 순찰 경로 · Zone 영역 · 이름) — 확장 Zone(EXTRA_ZONES)과 같은 꼴 (원점 기준 로컬 좌표)
