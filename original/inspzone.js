@@ -1,7 +1,7 @@
 // 정밀검사Zone (AI정밀검사 · QMS Zone) — 오른쪽 세로 통로(x 30)와 오른쪽 벽(x 48) 사이, 뒤쪽 통로(z −32 · 출하 도크 아래)와 앞쪽 통로(z 9 · 정밀조립/적응가공 사이) 사이
 // llm-wiki 「AI정밀검사(QMS) Zone 통합 시나리오 v0.3」(10/6) 기준: 공정 내 전수검사는 각 생산 존이, 샘플링 검사는 정밀검사Zone이 맡는다.
 //  · 셀: 시료 접수·도킹 → ① 로봇형 비전 검사(ABIS 표면결함 · AIMAX Feature) · ② 3D 스캔·초음파 용접검사(ScanBox · UT NDT — 용접부 NDT 필수)
-//        ③ O-INSPECT 정밀 재측정(정반 안착) · ④ ATOS 3D 형상편차(Point Cloud) → ⑤ AI 판정(OK · 판정 불확실 · NG) · 결과 버퍼
+//        ③ O-INSPECT 정밀 재측정(정반 안착) · ④ MMZ 3D 형상편차(Point Cloud) → ⑤ AI 판정(OK · 판정 불확실 · NG) · 결과 버퍼
 //  · 제품별 검사 경로 — 모든 제품이 같은 장비를 거치지 않는다 (판정 불확실 → ③ 재측정 후 재판정 · NG → 로트 봉쇄 · 처분(재작업·폐기) · 공정 보정 · 샘플링 강화 — js/serial.js)
 //  · 검사 AMR 3대가 세 생산 Zone 적재장에서 N개마다 1개씩 샘플을 지그째 실어 온다 (공장 통로로 이동 — 시뮬레이션 이동체와 서로 양보)
 // 시계는 정밀조립Zone 시뮬레이션과 같다 (main.js가 step/update를 부른다). 라인 전체 비상정지·보호정지 때 함께 멈춘다.
@@ -21,7 +21,7 @@ export const INSP = {
   lane: 39.25,   // 두 셀 줄 사이 AMR 차로 (x)
   cells: INSP_CELLS,
   // 제품별 검사 경로 (접수 다음 ~ 판정 앞)
-  routes: { doortrim: ['VIS', 'SCAN'], eaxle: ['VIS', 'OINS'], hood: ['VIS', 'SCAN'], door: ['VIS', 'SCAN'], hblock: ['ATOS', 'OINS'], rcover: ['ATOS', 'OINS'] },
+  routes: { doortrim: ['VIS', 'SCAN'], eaxle: ['VIS', 'OINS'], hood: ['VIS', 'SCAN'], door: ['VIS', 'SCAN'], hblock: ['MMZ', 'OINS'], rcover: ['MMZ', 'OINS'] },
   products: { doortrim: ['main', '도어트림', 0xf0a030], eaxle: ['main', 'e-axle', 0x9a6bff], hood: ['flex', '후드', 0xf0a030], door: ['flex', '도어', 0x9a6bff], hblock: ['adapt', '유압블록', 0xf0a030], rcover: ['adapt', '리어커버', 0x9a6bff] },
   zones: { main: '정밀조립', flex: '유연생산', adapt: '적응가공' },
   sample: { main: 30, flex: 10, adapt: 20 },   // 양품 N개마다 1개 샘플 (유연생산은 용접부 NDT 대상이라 촘촘히)

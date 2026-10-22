@@ -12,7 +12,7 @@
 <body>
 <header class="topbar">
   <div class="brand"><svg viewBox="0 0 44 44" aria-hidden="true"><path d="m22 5 15 9v17l-15 8-15-8V14Z"/><path d="m15 22 5 5 10-11"/></svg><div><div class="eyebrow">PHYSICAL AI TESTBED / QMS</div><h1>정밀검사 <span>Zone</span></h1></div></div>
-  <div class="mode-switch" aria-label="운영 모드"><button data-mode="smart">자동화</button><button data-mode="dark" class="active">피지컬AI</button></div>
+  <div class="mode-switch" aria-label="운영 모드"><span class="physical-only">피지컬AI 시연 모드</span></div>
   <div class="top-actions"><span class="sim-badge"><i></i> 시뮬레이션</span><time id="clock">08:00:00</time><button class="icon-button" id="about" title="구성·출처 안내" aria-label="구성·출처 안내">ⓘ</button></div>
 </header>
 <section class="metrics" aria-label="검사 현황">
@@ -24,13 +24,13 @@
   <div class="bad"><span>NG · 공정 환류 요청</span><strong id="ng">0</strong><em>QUALITY FEEDBACK</em></div>
 </section>
 <main class="workspace">
-  <aside class="cell-panel"><div class="panel-title"><h2>검사 셀</h2><span>06 STATIONS</span></div><p class="panel-sub">셀을 선택하면 동작을 가까이 봅니다.</p><div id="cell-list"></div><div class="cell-key"><span><i class="dot running"></i>검사 중</span><span><i class="dot waiting"></i>대기</span><span><i class="dot fault"></i>이상</span></div><div class="zone-foot"><span class="mini-mark">Q</span><div>AI 정밀검사 · QMS<small>제품 ID 기반 검사 이력 연결</small></div></div></aside>
+  <aside class="cell-panel"><div class="panel-title"><h2>검사 셀</h2><span>05 CELLS</span></div><p class="panel-sub">사업계획서 A-4-1 ~ A-4-5</p><div id="cell-list"></div><div class="cell-key"><span><i class="dot running"></i>검사 중</span><span><i class="dot waiting"></i>대기</span><span><i class="dot fault"></i>이상</span></div><div class="zone-foot"><span class="mini-mark">Q</span><div>AI 정밀검사 · QMS<small>제품 ID 기반 검사 이력 연결</small></div></div></aside>
   <section class="stage" aria-label="정밀검사존 3D 애니메이션">
     <div id="viewport"></div><div id="loader"><span class="load-ring"></span><strong>정밀검사존을 준비하고 있습니다</strong><small>검사장비 · 로봇 · AMR 불러오는 중</small></div>
     <div class="stage-heading"><span class="section-number">A—04</span><div><h2>Precision Inspection Zone</h2><p>샘플 접수에서 품질 환류까지</p></div></div>
     <div class="view-tools"><button id="overview" title="전체 배치로 이동">⌗ 전체 보기</button><button id="labels" class="active" aria-pressed="true">라벨</button><button id="data-lines" class="active" aria-pressed="true">데이터 흐름</button></div>
     <div id="focus-card" class="focus-card" hidden></div>
-    <div class="scene-caption"><i></i><span>검사 AMR 3대 · 6개 공정 노드</span><span class="caption-hint">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</span></div>
+    <div class="scene-caption"><i></i><span>검사 AMR 3대 · 5개 사업계획 셀</span><span class="caption-hint">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</span></div>
     <div class="playback"><button id="play" class="primary" aria-label="일시정지">Ⅱ 일시정지</button><div class="speeds" aria-label="재생 배속"><button data-speed="1">1×</button><button data-speed="3">3×</button><button data-speed="10" class="active">10×</button><button data-speed="30">30×</button></div><span class="toolbar-divider"></span><button id="reset" title="진행 상태를 초기화">↺ 초기화</button><button id="record"><span class="record-dot"></span> 녹화</button><button id="stop" class="stop-button">■ 보호정지</button></div>
   </section>
   <aside class="activity-panel"><div class="panel-title"><h2>Zone 오케스트레이터</h2><span class="live-dot">DEMO</span></div><div class="agent-card"><div class="agent-symbol">◈</div><div><strong id="agent-state">검사 작업 조정 중</strong><p>관찰 → 판단 → 작업 요청</p></div></div><div class="subhead"><h3>검사 AMR</h3><span id="amr-count">3 VEHICLES</span></div><div id="amr-list"></div><div class="subhead log-heading"><h3>운영 이벤트</h3><button id="history">품질 이력 ↗</button></div><div id="event-log" role="log" aria-label="최근 운영 이벤트"></div></aside>
@@ -39,7 +39,7 @@
   <div class="scenario-input"><div class="eyebrow">INSPECTION RECIPE</div><div class="input-row"><label for="product" class="sr-only">검사 제품</label><select id="product"><option value="hood">후드 · 유연생산</option><option value="door">도어 · 유연생산</option><option value="doortrim">도어트림 · 정밀조립</option><option value="eaxle">e-axle · 정밀조립</option><option value="hblock">유압블록 · 적응가공</option><option value="rcover">리어커버 · 적응가공</option></select><label for="outcome" class="sr-only">판정 시나리오</label><select id="outcome"><option value="ok">정상 · OK</option><option value="uncertain">불확실 → 재측정 → OK</option><option value="ng">NG → 공정 환류</option><option value="auto">혼합 판정 · 모사</option></select><button id="enqueue" class="primary">＋ 샘플 투입</button></div><label class="auto-check"><input type="checkbox" id="auto" checked> 자동 시연 <span>생산 Zone의 샘플 요청을 모사합니다.</span></label></div>
   <div class="route-panel"><div class="subhead"><h3>제품별 검사 경로</h3><span id="route-product">후드</span></div><div id="recipe-route"></div><div class="route-legend"><span><b class="green">OK</b> 정상 반출</span><span><b class="amber">불확실</b> O-INSPECT 재측정</span><span><b class="red">NG</b> 보류 · 선행공정 환류 요청</span></div></div>
 </section>
-<footer><span>검사 동작·판정은 시나리오 모사입니다. 장비 도입 사양·실제 검사 성능을 의미하지 않습니다.</span><button id="fault">⚡ 선택 셀 이상 시연</button><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">메타팩토리 원본 ↗</a></footer>
+<section class="equipment-options"><strong>로봇 구성</strong><label>표면·피처 검사 <select id="cobot-model"><option>H2017</option><option>H2515</option></select></label><label>AMR → 검사 지그 이적재 <select id="handler-model"><option>HDR50-22</option><option>HDR80-22</option></select></label><span>장비 외형·동작은 개념 모델 · 기본 선택은 시연용</span></section><footer><span>검사 동작·판정은 시나리오 모사입니다. 장비 도입 사양·실제 검사 성능을 의미하지 않습니다.</span><button id="fault">⚡ 선택 셀 이상 시연</button><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">메타팩토리 원본 ↗</a></footer>
 <div id="toast" role="status"></div>
 <dialog id="modal"><div class="modal-head"><h2 id="modal-title"></h2><button id="close-modal" aria-label="닫기">✕</button></div><div id="modal-body"></div></dialog>
 <script type="module" src="app.js"></script>
