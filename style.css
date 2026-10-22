@@ -7,3 +7,5 @@
 .physical-only{padding:10px 16px;color:#70e2c5;font-weight:700;display:block}.equipment-options{display:flex;align-items:center;gap:24px;flex-wrap:wrap;padding:12px 24px;background:#10232d;border-top:1px solid #294650;font-size:12px}.equipment-options label{display:flex;align-items:center;gap:8px}.equipment-options span{color:#8ba8b2}.equipment-label{background:#10232de8;border:1px solid #497582;border-radius:4px;color:#d9eeef;font-size:9px;white-space:nowrap;padding:4px 7px}.plan-label{color:#70e2c5;font-weight:700;cursor:pointer;font-size:10px}.station-links{display:flex;flex-wrap:wrap;gap:4px;padding:10px 0}.station-links button{font-size:9px;padding:5px}.cell-row{min-height:69px}.cell-row strong{font-size:11px}
 
 .label-layer{z-index:1}.focus-card,.view-tools,.playback,.stage-heading,.scene-caption{z-index:3}.plan-label{pointer-events:auto}.equipment-options select{background:#19333e;color:#d9eeef;border:1px solid #42606b;border-radius:5px;padding:6px}
+
+.equipment-options a{color:#70dfc8}.focus-card{width:205px}.equipment-label{font-size:10px}

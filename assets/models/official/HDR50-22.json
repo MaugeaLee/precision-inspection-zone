@@ -1,0 +1,80 @@
+{
+  "model": "HDR50-22",
+  "joints": [
+    {
+      "name": "lower_frame_link",
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "lower": -3.142,
+      "upper": 3.142
+    },
+    {
+      "name": "upper_frame_link",
+      "axis": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "lower": -1.134,
+      "upper": 2.967
+    },
+    {
+      "name": "arm_link",
+      "axis": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "lower": -1.396,
+      "upper": 3.141
+    },
+    {
+      "name": "wrist_body_link",
+      "axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "lower": -6.283,
+      "upper": 6.283
+    },
+    {
+      "name": "wrist_holder_link",
+      "axis": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "lower": -2.182,
+      "upper": 2.182
+    },
+    {
+      "name": "flange_link",
+      "axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "lower": -6.283,
+      "upper": 6.283
+    }
+  ],
+  "tip": "tool0",
+  "faces": 47491,
+  "bounds": [
+    [
+      -0.41820339965820313,
+      -0.2540082809574112,
+      -0.7350041596015429
+    ],
+    [
+      1.5099994820700522,
+      0.25118771362304687,
+      0.6700087280273438
+    ]
+  ],
+  "source": "tmp\\hdr-description\\urdf\\robots\\hdr50_22\\hdr50_22.urdf.xacro"
+}
