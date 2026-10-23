@@ -18,7 +18,7 @@ const PI = Math.PI;
 export const INSP = {
   key: 'insp', code: '정밀검사', uidp: 'QIS', name: '정밀검사Zone', sub: 'AI정밀검사(QMS) · 샘플링 검사',
   area: INSP_AREA,
-  lane: 39.25,   // 두 셀 줄 사이 AMR 차로 (x)
+  lane: 29.4,   // 두 셀 줄 사이 AMR 차로 (x)
   cells: INSP_CELLS,
   // 제품별 검사 경로 (접수 다음 ~ 판정 앞)
   routes: { doortrim: ['VIS', 'SCAN'], eaxle: ['VIS', 'OINS'], hood: ['VIS', 'SCAN'], door: ['VIS', 'SCAN'], hblock: ['MMZ', 'OINS'], rcover: ['MMZ', 'OINS'] },
@@ -27,8 +27,8 @@ export const INSP = {
   sample: { main: 30, flex: 10, adapt: 20 },   // 양품 N개마다 1개 샘플 (유연생산은 용접부 NDT 대상이라 촘촘히)
   // 샘플 수거 위치 (각 Zone 적재장 옆 통로 쪽) — aisle은 공장 통로 동선 계산용 (sim.js route)
   pickup: { main: { x: 21, z: 6.8, aisle: 'F' }, flex: { x: 22.5, z: -11.6, aisle: 'B' }, adapt: { x: 18, z: 11.4, aisle: 'F' } },
-  entryZ: -29.2,   // 뒤쪽 통로에서 들어와 접수 도킹 앞에서 대기하는 줄
-  station: { z: 3.4, xs: [33.3, 35.2, 37.1], exitZ: 6.6 },   // 검사 AMR 대기·무선 충전 — Zone 앞쪽(남쪽) 끝 왼쪽 (앞쪽 통로로 나간다)
+  entryZ: -35.5,   // 뒤쪽 통로에서 들어와 접수 도킹 앞에서 대기하는 줄
+  station: { z: 9.4, xs: [33.3, 35.2, 37.1], exitZ: 6.6 },   // 검사 AMR 대기·무선 충전 — Zone 앞쪽(남쪽) 끝 왼쪽 (앞쪽 통로로 나간다)
   // 오른쪽 벽 (적응가공Zone 전광판·CCTV 전광판과 같은 벽 · 같은 높이 · 같은 0.5m 간격): 적응가공·정밀검사 CCTV 전광판(z −2 ~ 10) 바로 왼쪽에 전광판, 그 왼쪽에 로봇 비전 관제 디스플레이
   wall: { x: 47.8, y: 5.1, z: -2 - 0.5 - 9, rot: -PI / 2, w: 18, h: 4 },
   cams: { x: 47.8, y: 5.1, z: -2 - 0.5 - 18 - 0.5 - 6, rot: -PI / 2, w: 12, h: 4 },
