@@ -18,17 +18,24 @@ function group(root,x,z){const g=new T.Group();g.position.set(x,0,z);root.add(g)
 function rack(g,x,z){box(g,.65,1.8,.65,x,.9,z,black);for(let y=.25;y<1.7;y+=.23){box(g,.55,.13,.04,x,y,z+.34,gray);box(g,.06,.04,.02,x+.2,y,z+.37,blue);}}
 function scanner(root,x,z,w,name){const g=group(root,x,z);g.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(g,w,.15,3.6,0,.075,0,gray);box(g,w,3.5,.18,0,1.75,-1.7,gray);for(const side of [-1,1])box(g,.2,3.5,3.6,side*w/2,1.75,0,gray);box(g,w,.3,3.6,0,3.5,0,gray);box(g,w-.8,.7,2,0,.5,0,black);const sample=new T.Group();sample.position.y=.9;g.add(sample);const sensor=box(g,.45,.25,.3,-w*.27,2,-.9,blue);box(g,.18,.12,.04,-w*.27,2,-.72,black);const lamp=box(g,.15,.2,.15,w/2-.2,3.85,1.5,gold);text(g,name,0,4.2,0);text(g,'형상 · CAD 편차',0,.25,1.9);return {g,sample,sensor,lamp};}
 export function buildPDFCells(root,engine,plan){
- const large=scanner(root,51,-25,5.5,'ATOS ScanBox 8160 · 5X');const small=scanner(root,58,-25,4,'ATOS ScanBox 5130 · 5');
- const xr=group(root,54,-15);xr.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(xr,5,.3,3.8,0,.15,0,gray);box(xr,5,2.8,.2,0,1.7,-1.7);for(const x of [-2.4,2.4])box(xr,.2,2.8,3.4,x,1.7,0);box(xr,5,.2,3.8,0,3.2,0);box(xr,4,.8,1.8,0,.7,.9,black);const door=box(xr,3.7,2.3,.15,0,1.95,1.72,gray);const xs=new T.Group();xs.position.set(0,1.15,.5);xr.add(xs);const xl=text(xr,'인라인 X-ray · 대기',0,3.7,0);box(xr,.4,.5,.15,2.7,1.4,1.5,blue);text(xr,'차폐 · 안전 인터록 (모사)',0,.2,2.3);
+ const large=scanner(root,34,-14,5.5,'ATOS ScanBox 8160 · 5X');const small=scanner(root,42,-14,4,'ATOS ScanBox 5130 · 5');
+ const xr=group(root,60,-14);xr.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(xr,5,.3,3.8,0,.15,0,gray);box(xr,5,2.8,.2,0,1.7,-1.7);for(const x of [-2.4,2.4])box(xr,.2,2.8,3.4,x,1.7,0);box(xr,5,.2,3.8,0,3.2,0);box(xr,4,.8,1.8,0,.7,.9,black);const door=box(xr,3.7,2.3,.15,0,1.95,1.72,gray);const xs=new T.Group();xs.position.set(0,1.15,.5);xr.add(xs);const xl=text(xr,'인라인 X-ray · 대기',0,3.7,0);box(xr,.4,.5,.15,2.7,1.4,1.5,blue);text(xr,'차폐 · 안전 인터록 (모사)',0,.2,2.3);
  // Cell 1 tooling and data acquisition, not an extra production station.
- const tooling=group(root,32,-19);box(tooling,1.2,.75,.8,0,.4,0,gray);for(const x of [-.4,0,.4])box(tooling,.17,.25,.3,x,.9,0,black);text(tooling,'그리퍼 · 툴체인저',0,1.3,0);rack(root,31.8,-12);
+ const tooling=group(root,39.5,-28);box(tooling,1.2,.75,.8,0,.4,0,gray);for(const x of [-.4,0,.4])box(tooling,.17,.25,.3,x,.9,0,black);text(tooling,'그리퍼 · 툴체인저',0,1.3,0);rack(root,56,-29);
  const dg=group(root,34,3);box(dg,2.5,.12,2,0,.06,0,gray);box(dg,.25,1.1,2,-1.1,.6,0,white);text(dg,'4족 로봇 도킹 · 충전',0,1.6,0);
  const dd=group(root,44,3);box(dd,2.4,.3,2.4,0,.15,0,gray);box(dd,1.8,.08,1.8,0,.35,0,blue);text(dd,'드론 도킹 · 충전',0,1.1,0);
  // Sensor modules on the representative mobile robots.
  box(plan.dog,.25,.2,.3,0,1.15,0,black);box(plan.dog,.12,.12,.12,.78,.9,.12,blue);box(plan.dog,.12,.12,.12,.78,.9,-.12,gold);text(plan.dog,'RGB·Depth / LiDAR / 열화상·환경',0,1.85,0);
  box(plan.drone,.4,.3,.35,0,-.3,0,black);for(const x of [-.12,.12])box(plan.drone,.08,.08,.05,x,-.3,.2,blue);text(plan.drone,'원키트 RGB·Depth·열화상',0,1,0);
- const console=plan.visuals.JUDGE.g;for(const x of [-2.2,-1.1,1.1,2.2])rack(console,x,-2.7);for(const x of [-1.7,0,1.7]){box(console,1.5,.1,.7,x,1.1,.6,white);box(console,1.1,.6,.08,x,1.55,.3,blue);}const dashboard=text(console,'QMS · 데이터 허브 · AI 분석',0,3.2,-2.7);
- text(console,'Process Simulation · Opcenter · Amesim',0,.3,1.8);text(console,'Testlab · Heeds · Insight Hub · 역설계',0,.3,2.3);
+ const console=plan.visuals.JUDGE.g;for(const x of [-2.2,-1.1,1.1,2.2])rack(console,x,3);for(const x of [-1.7,0,1.7]){box(console,1.5,.1,.7,x,1.1,-.5,white);box(console,1.1,.6,.08,x,1.55,-.8,blue);}const dashboard=text(console,'QMS · 데이터 허브 · AI 분석',0,4.6,-3.7);
+ text(console,'Process Simulation · Opcenter · Amesim',0,.3,4);text(console,'Testlab · Heeds · Insight Hub · 역설계',0,.3,4.5);
+ // Separate control pedestals and protective fencing, following the PDF views.
+ for(const [x,z]of [[31,-10],[47.5,-10],[63.5,-10]]){const g=group(root,x,z);box(g,.7,1.1,.6,0,.55,0,white);box(g,.5,.35,.05,0,1.25,.27,blue);}
+ for(const [x,z,w]of [[35,-22,7],[34,-11.5,6],[42,-11.5,5]]){const g=group(root,x,z);for(const dx of [-w/2,w/2]){box(g,.09,1.2,.09,dx,.6,0,gold);box(g,w/2-1.3,.8,.04,dx/2,.65,0,new T.MeshStandardMaterial({color:0x596e74,transparent:true,opacity:.28,wireframe:true}));}}
+ // Cell 3: charging cabinet and local status terminal. Cell 4: warehouse racks and dock.
+ const gc=group(root,34,3);box(gc,.9,1.8,.6,-2,.9,0,white);box(gc,.55,.55,.05,-2,1.3,.33,blue);
+ const dc=group(root,44,3);for(const x of [-2,2])box(dc,.15,2.8,.15,x,1.4,-1.7,gray);box(dc,4.2,.2,.7,0,2.8,-1.7,white);
+ for(const x of [41,47]){const g=group(root,x,-2);for(const dx of [-1,1])box(g,.1,2.6,.1,dx,1.3,0,gold);for(const y of [.25,1.35,2.45]){box(g,2.2,.08,.9,0,y,0,gray);for(const dx of [-.5,.5])box(g,.7,.6,.65,dx,y+.35,0,white);}}
  const sensorCone=new T.Mesh(new T.ConeGeometry(1.5,4,24,1,true),new T.MeshBasicMaterial({color:0x63d9ff,transparent:true,opacity:.08,depthWrite:false,side:T.DoubleSide}));sensorCone.position.y=-2.2;plan.drone.add(sensorCone);
  const monitor={ground:null,air:null,cycle:-1};plan.monitor=monitor;
  return {update(t){

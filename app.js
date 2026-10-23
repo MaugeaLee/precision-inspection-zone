@@ -44,7 +44,7 @@ async function init(){
     engine=new InspectionSession(scene);
     planScene=new PlanScene(engine,scene,focusPlan);
     engine.onEvent(()=>renderLog());
-    makeFloor();contactShadows(scene,[...engine.order.map(c=>[c.def.x,c.def.z-1.2,6,5]),[51,-25,7,6],[58,-25,6,5],[54,-15,7,6]]);makeSourceBays();makeCellList();bindControls();makeRoute();
+    makeFloor();contactShadows(scene,[...engine.order.map(c=>[c.def.x,c.def.z-3.7,7,6]),[34,-14,7,6],[42,-14,6,5],[60,-14,7,6]]);makeSourceBays();makeCellList();bindControls();makeRoute();
     for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];c.el.addEventListener('pointerdown',e=>{e.stopPropagation();focusCell(c.id);});for(const p of c.plates)p.visible=false;}
     new ResizeObserver(resize).observe(viewport);resize();
     seedDemo();$('loader').hidden=true;updateUI();requestAnimationFrame(frame);
@@ -103,7 +103,7 @@ function seedDemo(){engine.enqueue('hood','ok');engine.enqueue('hblock','uncerta
 function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재생';$('play').setAttribute('aria-label',running?'일시정지':'재생');}
 function focusCell(id){
   if(!engine.cells[id])return;selected=id;planScene.focus=id;const c=engine.cells[id];
-  cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-1),position:new THREE.Vector3(c.def.x+7.8,6.3,c.def.z+6.5)};
+  cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-3.5),position:new THREE.Vector3(c.def.x+7.8,6.3,c.def.z+4)};
   document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id));updateFocus();
 }
 function updateFocus(){
