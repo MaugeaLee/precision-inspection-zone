@@ -15,7 +15,7 @@ const $=id=>document.getElementById(id);
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
 let planScene;
-let engine,renderer,scene,camera,controls,labelRenderer,selected=null,running=true,halted=false,speed=10,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
+let engine,renderer,scene,camera,controls,labelRenderer,selected=null,running=true,halted=false,speed=1,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
 const viewport=$('viewport');
 const names={DOCK:'시료 접수·도킹',VIS:'ZEISS ABIS III · AIMAX',SCAN:'3D·UT·X-ray 복합검사',OINS:'ZEISS O-INSPECT 8/6/3',MMZ:'ZEISS MMZ M',JUDGE:'AI 판정·결과 버퍼'};
 let toastTimer;
@@ -108,7 +108,7 @@ function focusCell(id){
 }
 function updateFocus(){
   if(!selected)return;const plan=PLAN.find(p=>p.id===selected);if(plan){$('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">Cell ${plan.id.slice(-1)}</div><h3>${plan.name}</h3><p>${plan.description}</p><p>${PDF_CELLS[Number(plan.id.slice(-1))-1].checks}</p><p class="detail-note">PDF ${PDF_CELLS[Number(plan.id.slice(-1))-1].pages}쪽 · 상단 ‘PDF 셀 구성’에서 장비 목록 확인</p>`;return;}const c=engine.cells[selected],fault=engine.equipment[selected].state;
-  $('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">QIS-${selected}</div><h3>${names[selected]}</h3><p>${escape(c.def.use)}</p><div class="detail-grid"><div><span>현재 상태</span><b>${halted?'보호정지':fault!=='IDLE'?fault==='DOWN'?'이상':'점검 중':c.state==='BUSY'?'검사 중':c.state==='DONE'?'인계 대기':'대기'}</b></div><div><span>작업 진행</span><b>${Math.round(c.progress*100)}%</b></div><div><span>기준 사이클</span><b>${Math.round(c.def.cycle*engine.mul)}s</b></div><div><span>작업 완료</span><b>${c.done}회</b></div></div><p class="detail-note">사이클·판정은 원본 시뮬레이션 설정값입니다.</p>`;
+  $('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">QIS-${selected}</div><h3>${names[selected]}</h3><p>${escape(c.def.use)}</p><div class="detail-grid"><div><span>현재 상태</span><b>${halted?'보호정지':fault!=='IDLE'?fault==='DOWN'?'이상':'점검 중':c.state==='BUSY'?'검사 중':c.state==='DONE'?'인계 대기':'대기'}</b></div><div><span>작업 진행</span><b>${Math.round(c.progress*100)}%</b></div><div><span>기준 사이클</span><b>${Math.round(c.def.cycle*engine.mul)}s</b></div><div><span>작업 완료</span><b>${c.done}회</b></div></div><p class="motion-step">${escape(planScene.visuals[selected]?.motionText||"대기")}</p><p class="detail-note">제품 표면 기반 예시 경로 · 장비별 검사 순서 모사</p>`;
 }
 function makeRoute(){
   const product=$('product').value,ids=['DOCK',...ROUTES[product],'JUDGE'];$('route-product').textContent=PRODUCTS[product][1];$('recipe-route').innerHTML=ids.map(id=>`<span class="node">${CELL_SHORT[id]}</span>`).join('<span>→</span>');
@@ -194,3 +194,4 @@ function arrangeLabels(){
  });
  const occupied=[];labels.sort((a,b)=>a.priority-b.priority||a.distance-b.distance);for(const l of labels){const r={x:l.x-l.w/2,y:l.y-12,w:l.w,h:25};if(r.x<0||r.y<60||r.x+r.w>width||r.y+r.h>height-70)continue;if(occupied.some(b=>r.x<b.x+b.w&&r.x+r.w>b.x&&r.y<b.y+b.h&&r.y+r.h>b.y))continue;l.o.visible=true;occupied.push(r);}
 }
+
