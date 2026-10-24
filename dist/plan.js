@@ -1,3 +1,4 @@
+import {makeABISIII} from './abis.js';
 import {panelGeometry} from './render-quality.js';
 import {buildPDFCells} from './pdf-cells.js';
 import {makeRobotRig,makeProduct,replaceProduct} from './shapes.js';
@@ -19,8 +20,8 @@ function segment(g,a,b,r,m){const dir=b.clone().sub(a),o=new T.Mesh(new T.Cylind
 // Manufacturer meshes and URDF joint transforms; no arm scaling or stretched links.
 function robot(g,x,z,cobot,sensor){const root=new T.Group();root.position.set(x,cobot?.4:.65,z);if(cobot&&x>0)root.rotation.y=Math.PI;g.add(root);box(root,cobot?.38:.65,cobot?.4:.65,cobot?.38:.65,0,cobot?-.2:-.325,0,dark);const tag=label(root,cobot?'두산 H2515':'현대 HDR50-22',0,2.5,0);const carried=new T.Group();g.add(carried);return {root,tag,cobot,sensor,carried,station:g};}
 function pose(r,target,model,t){
- if(r.model!==model){if(r.rig)r.root.remove(r.rig.root);r.rig=makeRobotRig(model);r.root.add(r.rig.root);r.model=model;const tip=r.rig.tcp;box(tip,r.cobot?.18:.24,.09,.12,0,0,0,r.cobot?blue:dark);if(!r.cobot)for(const x of [-.12,.12])box(tip,.035,.12,.05,x,0,.06,metal);}
- const world=r.station.localToWorld(target.clone());if(r.poseT!==t||r.poseModel!==model){r.rig.solve(world);r.poseT=t;r.poseModel=model;}r.carried.position.copy(r.station.worldToLocal(r.rig.tcp.getWorldPosition(new T.Vector3()))).add(new T.Vector3(0,-.18,0));r.carried.visible=!!r.carry;if(r.carry&&r.product)replaceProduct(r.carried,r.product);r.tag.element.textContent=(r.cobot?'두산 ':'현대 ')+model;
+ if(r.model!==model){if(r.rig)r.root.remove(r.rig.root);r.rig=makeRobotRig(model);r.root.add(r.rig.root);r.model=model;const tip=r.rig.tcp;if(r.sensor==='ABIS'){r.abis=makeABISIII();tip.add(r.abis);}else box(tip,r.cobot?.18:.24,.09,.12,0,0,0,r.cobot?blue:dark);if(!r.cobot)for(const x of [-.12,.12])box(tip,.035,.12,.05,x,0,.06,metal);}
+ const world=r.station.localToWorld(target.clone());if(r.poseT!==t||r.poseModel!==model){r.rig.solve(world);r.poseT=t;r.poseModel=model;}r.carried.position.copy(r.station.worldToLocal(r.rig.tcp.getWorldPosition(new T.Vector3()))).add(new T.Vector3(0,-.18,0));r.carried.visible=!!r.carry;if(r.carry&&r.product)replaceProduct(r.carried,r.product);if(r.abis){const q=r.rig.tcp.getWorldQuaternion(new T.Quaternion());const down=new T.Quaternion().setFromUnitVectors(new T.Vector3(0,0,1),new T.Vector3(0,-1,0));r.abis.quaternion.copy(q.invert().multiply(down));}r.tag.element.textContent=(r.cobot?'두산 ':'현대 ')+model+(r.sensor==='ABIS'?' · ZEISS ABIS III':'');
 }
 
 // Enclosed inspection workspaces; transparent panels expose the demonstration.
