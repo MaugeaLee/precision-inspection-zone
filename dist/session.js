@@ -1,3 +1,4 @@
+import {restorePayload} from './transfer.js';
 import {TrafficReservations,MOVING,corridorPath} from './traffic.js';
 import {makeProduct} from './shapes.js';
 import {KIT} from './original/factory.js';
@@ -20,6 +21,7 @@ export class InspectionSession extends InspZone {
     this.restart('dark');
   }
   restart(mode='dark'){
+    for(const carrier of this.carriers||[])this.detach(carrier);
     this.events=[];this.records=[];this.trace=[];
     for(const c of Object.values(this.equipment))Object.assign(c,{state:'IDLE',remaining:0,busy:false});
     mode='dark';this.sim.mode.key=mode;super.setup(this.sim,null,true);this.wallG.visible=false;
@@ -43,6 +45,7 @@ export class InspectionSession extends InspZone {
     return true;
   }
   attach(c){const m=makeProduct(c.item.product);m.position.set(0,KIT.BELT_Y-.02,0);c.g.add(m);c.pm=m;}
+  detach(c){if(c.pm){c.pm.removeFromParent();c.pm=null;}}
   sampleTick(){} // Production throughput is outside this independent Zone.
   inPath(a,b){return corridorPath(a,b);}
   go(c,pts,state){
@@ -56,6 +59,7 @@ export class InspectionSession extends InspZone {
   }
   blocked(c){return !this.traffic.acquire(c,this.carriers);}
   stepCarrier(c,dt){
+    if(c.state==='ready')restorePayload(c);
     if(c.state==='queue'){
       const dock=this.cells.DOCK;if(dock.occ||dock.fault)return;
       dock.occ=c;c.target='DOCK';this.go(c,[c,dock.def],'move');return;

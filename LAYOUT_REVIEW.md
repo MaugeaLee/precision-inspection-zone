@@ -49,3 +49,10 @@ ZEISS 공식 8/6/3 제품 사진을 참고하여 흰색 본체·검은색 베이
 
 검증: JS 구문 검사, 브라우저 광학·접촉 단계 확인, 6종 제품의 8개 접촉점(총 48개)에서 테이블 이동 후 프로브 끝과 목표점의 기하학적 일치 확인. 이는 실제 800×600×300mm 측정 범위 적합성이나 제조사 측정 정확도 검증이 아니다.
 참고: https://www.zeiss.com/metrology/en/systems/cmms/vmms/o-inspect.html
+
+## AMR physical handoff animation (2026-10-25)
+- One carrier payload object is reparented to the HDR50-22 gripper and fixture; released only after landing. Product-height grasp offset, jaw closing dwell, vertical lift/lower, lateral transfer arc, and empty return added.
+- Preview includes an AMR; reverse seeking and product replacement supported. Session reset/ready/detach restores or removes held payloads.
+- Validation: 528 scene ownership/pose checks across six products and four stations; maximum sampled IK residual 5.3 mm. Existing 36-request traffic regression completes, including six remeasurements and twelve faults.
+- Concept animation: gripper orientation is stabilized, not a validated six-axis tool-orientation program. SCAN internal ATOS/UT/X-ray stage transitions retain the existing schematic display; AMR-to-staging-fixture handoff is updated.
+

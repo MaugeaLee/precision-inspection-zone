@@ -28,11 +28,11 @@ export function makeRobotRig(model){
  const flange=asset.getObjectByName(info.tip);if(!flange)throw new Error(model+' 플랜지 누락');
  const tcp=new T.Group();tcp.position.z=.15;flange.add(tcp);
  const home=model==='HDR50-22'?[0,1.3,.4,0,.4,0]:[0,.55,-1.15,0,.65,0];
- const rig={root,asset,joints,flange,tcp,model,setAngles(values){joints.forEach((j,i)=>{j.angle=T.MathUtils.clamp(values[i]??0,j.lower,j.upper);j.node.quaternion.setFromAxisAngle(j.axis,j.angle);});root.updateWorldMatrix(true,true);},solve(target){
+ const rig={root,asset,joints,flange,tcp,model,setAngles(values){joints.forEach((j,i)=>{j.angle=T.MathUtils.clamp(values[i]??0,j.lower,j.upper);j.node.quaternion.setFromAxisAngle(j.axis,j.angle);});root.updateWorldMatrix(true,true);},solve(target,tolerance=.012){
   root.updateWorldMatrix(true,true);
   const tip=new T.Vector3(),origin=new T.Vector3(),axis=new T.Vector3(),qa=new T.Quaternion();
-  for(let pass=0;pass<9;pass++){
-   tcp.getWorldPosition(tip);if(tip.distanceTo(target)<.012)break;
+  for(let pass=0;pass<24;pass++){
+   tcp.getWorldPosition(tip);if(tip.distanceTo(target)<tolerance)break;
    for(let i=joints.length-1;i>=0;i--){const j=joints[i];j.node.getWorldPosition(origin);j.node.parent.getWorldQuaternion(qa);axis.copy(j.axis).applyQuaternion(qa).normalize();tcp.getWorldPosition(tip);
     const a=tip.sub(origin),b=target.clone().sub(origin);a.addScaledVector(axis,-a.dot(axis));b.addScaledVector(axis,-b.dot(axis));if(a.lengthSq()<1e-8||b.lengthSq()<1e-8)continue;a.normalize();b.normalize();const delta=Math.atan2(axis.dot(new T.Vector3().crossVectors(a,b)),a.dot(b));j.angle=T.MathUtils.clamp(j.angle+T.MathUtils.clamp(delta,-.25,.25),j.lower,j.upper);j.node.quaternion.setFromAxisAngle(j.axis,j.angle);j.node.updateWorldMatrix(false,true);
    }
@@ -41,3 +41,4 @@ export function makeRobotRig(model){
  }};
  rig.setAngles(home);return rig;
 }
+
