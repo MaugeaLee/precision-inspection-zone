@@ -1,3 +1,4 @@
+import {inspectionRoutes,measurementCell} from '../product-policy.js';
 // 정밀검사Zone (AI정밀검사 · QMS Zone) — 오른쪽 세로 통로(x 30)와 오른쪽 벽(x 48) 사이, 뒤쪽 통로(z −32 · 출하 도크 아래)와 앞쪽 통로(z 9 · 정밀조립/적응가공 사이) 사이
 // llm-wiki 「AI정밀검사(QMS) Zone 통합 시나리오 v0.3」(10/6) 기준: 공정 내 전수검사는 각 생산 존이, 샘플링 검사는 정밀검사Zone이 맡는다.
 //  · 셀: 시료 접수·도킹 → ① 로봇형 비전 검사(ABIS 표면결함 · AIMAX Feature) · ② 3D 스캔·초음파 용접검사(ScanBox · UT NDT — 용접부 NDT 필수)
@@ -21,7 +22,7 @@ export const INSP = {
   lane: 29.4,   // 두 셀 줄 사이 AMR 차로 (x)
   cells: INSP_CELLS,
   // 제품별 검사 경로 (접수 다음 ~ 판정 앞)
-  routes: { doortrim: ['VIS', 'SCAN'], eaxle: ['VIS', 'OINS'], hood: ['VIS', 'SCAN'], door: ['VIS', 'SCAN'], hblock: ['MMZ', 'OINS'], rcover: ['MMZ', 'OINS'] },
+  routes: inspectionRoutes,
   products: { doortrim: ['main', '도어트림', 0xf0a030], eaxle: ['main', 'e-axle', 0x9a6bff], hood: ['flex', '후드', 0xf0a030], door: ['flex', '도어', 0x9a6bff], hblock: ['adapt', '유압블록', 0xf0a030], rcover: ['adapt', '리어커버', 0x9a6bff] },
   zones: { main: '정밀조립', flex: '유연생산', adapt: '적응가공' },
   sample: { main: 30, flex: 10, adapt: 20 },   // 양품 N개마다 1개 샘플 (유연생산은 용접부 NDT 대상이라 촘촘히)
@@ -380,7 +381,7 @@ export class InspZone {
       }
     }
   }
-  nextOf(c) { const it = c.item; if (!it) return null; if (it.redo) return 'OINS'; return INSP.routes[it.product].find((id) => !it.done.has(id)) ?? 'JUDGE'; }
+  nextOf(c) { const it = c.item; if (!it) return null; if (it.redo) return measurementCell(it.product); return INSP.routes[it.product].find((id) => !it.done.has(id)) ?? 'JUDGE'; }
   go(c, pts, state) { c.path = pts; c.s = 0; c.L = pathLength(pts); c.state = state; c.wait = 0; }
   inPath(a, b) {   // 존 안: 셀 → 가운데 차로 → 셀
     const L = INSP.lane + (b.z > a.z ? 0.6 : -0.6), pts = [{ x: a.x, z: a.z }];   // 남행 +0.6 · 북행 −0.6 (마주 오는 AMR끼리 엇갈림)
@@ -468,7 +469,7 @@ export class InspZone {
         if (nx.fault) break;   // 다음 검사 셀이 고장·정비 중이면 지금 자리에서 기다린다
         if (o) {   // 서로 상대 셀을 기다리면 (재측정 ↔ 판정) 자리를 맞바꾼다 — 교착 방지 (가운데 차로는 방향별 두 줄이라 엇갈려 지나간다)
           if (!(o.state === 'ready' && this.nextOf(o) === c.at)) break;
-          for (const [a, from, to] of [[c, cur, nx], [o, nx, cur]]) { if (a.item?.redo && to.id === 'OINS') a.item.redo = false; to.occ = a; a.target = to.id; this.go(a, this.inPath(from.def, to.def), 'move'); }
+          for (const [a, from, to] of [[c, cur, nx], [o, nx, cur]]) { if (a.item?.redo && to.id === measurementCell(a.item.product)) a.item.redo = false; to.occ = a; a.target = to.id; this.go(a, this.inPath(from.def, to.def), 'move'); }
           for (const k of [cur, nx]) { k.state = 'IDLE'; k.item = null; k.progress = 0; }
           break;
         }
@@ -485,9 +486,9 @@ export class InspZone {
     const res = !it.rechecked && r < S.judge.uncertain ? 'unc' : r < S.judge.uncertain + S.judge.ng * (this.sim.serials?.ngFactor(zk) ?? 1) ? 'ng' : 'ok';   // 공정 보정 중인 Zone은 NG 확률이 낮다 (js/serial.js)
     const by = (s.by[it.product] ??= { ok: 0, unc: 0, ng: 0 });
     if (res === 'unc') {
-      s.unc++; by.unc++; it.rechecked = true; it.redo = true; it.done.delete('OINS');
+      s.unc++; by.unc++; it.rechecked = true; it.redo = true; it.done.delete(measurementCell(it.product));
       this.push(it, 'unc'); cell.flash = { col: 0xf5b82e, t: 2 };
-      this.sim.log('warn', `정밀검사 판정 불확실 — ${zl(zk)} ${plabel} ${it.id}`, { obs: 'AI 판정 신뢰도 기준 미달', dec: 'Quality & Recovery Agent: O-INSPECT 재측정 후 재판정', act: `${c.id} → ③ O-INSPECT` });
+      this.sim.log('warn', `정밀검사 판정 불확실 — ${zl(zk)} ${plabel} ${it.id}`, { obs: 'AI 판정 신뢰도 기준 미달', dec: `Quality & Recovery Agent: ${measurementCell(it.product)==='MMZ'?'MMZ G':'O-INSPECT'} 재측정 후 재판정`, act: `${c.id} → ${measurementCell(it.product)}` });
       return;
     }
     s.done++; s[res]++; by[res]++; this.push(it, res);
@@ -495,7 +496,7 @@ export class InspZone {
     cell.flash = { col: res === 'ok' ? 0x3ddc84 : 0xff4d4d, t: 2 };
     const sh = cell.parts.shelves[res === 'ok' ? 'ok' : 'ng'], n = res === 'ok' ? s.ok : s.ng; sh.forEach((b, i) => (b.visible = i < Math.min(6, n)));
     if (res === 'ng' && this.mode !== 'traditional') this.spawnPacket(cell.sensor.getWorldPosition(new THREE.Vector3()), 0xff4d4d);   // NG 판정 → 서버 (QMS 저장 · 오케스트레이터 알림)
-    if (res === 'ng') this.sim.log('warn', `정밀검사 NG — ${zl(zk)} ${plabel} ${it.id}`, { obs: `검사 경로 ${S.routes[it.product].map((id) => S.cells[id].label).join(' → ')}${it.rechecked ? ' → O-INSPECT 재측정' : ''}`, dec: 'Quality & Recovery Agent 최종 NG · QMS 저장', act: `${it.serial ? `${it.serial} · ` : ''}${zl(zk)} 로트 봉쇄(출하 보류) · 처분 판정(재작업·폐기) · 선행공정 보정 · 샘플링 강화` });
+    if (res === 'ng') this.sim.log('warn', `정밀검사 NG — ${zl(zk)} ${plabel} ${it.id}`, { obs: `검사 경로 ${S.routes[it.product].map((id) => S.cells[id].label).join(' → ')}${it.rechecked ? ' → '+(measurementCell(it.product)==='MMZ'?'MMZ G':'O-INSPECT')+' 재측정' : ''}`, dec: 'Quality & Recovery Agent 최종 NG · QMS 저장', act: `${it.serial ? `${it.serial} · ` : ''}${zl(zk)} 로트 봉쇄(출하 보류) · 처분 판정(재작업·폐기) · 선행공정 보정 · 샘플링 강화` });
     this.detach(c); c.item = null;
   }
   push(it, res) { this.recent.unshift({ id: it.id, zone: it.zone, product: it.product, res, t: this.time }); this.recent.length = Math.min(this.recent.length, 6); }
