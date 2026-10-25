@@ -61,3 +61,9 @@ ZEISS 공식 8/6/3 제품 사진을 참고하여 흰색 본체·검은색 베이
 - Demo classification: hood/door -> MMZ G; doortrim/e-axle/hblock/rcover -> O-INSPECT. Same policy for initial inspection, uncertain-result remeasurement, and preview selection.
 - Four-pad vacuum tooling for large panels, dimensioned opening/closing parallel jaws for remaining products. Tool mount, actuator and gripping indicator visible. Illustrative tooling, not validated engineering design or machine capacity certification.
 - Six uncertain scenarios each completed two measurements on only their permitted CMM; 528 transfer ownership checks and the 36-request traffic regression passed. Preview verified both tool types and disabled incompatible product choices.
+
+## ScanBox sizing and welded-only NDT (2026-10-25)
+- ScanBox selection shares the existing size policy: hood/door -> 8160, other products -> 5130 when 3D scanning is selected. Existing product-level scan route inclusion is preserved.
+- Welding is a separate recipe attribute. Demo hood/door variants are assumed welded assemblies; remaining variants are non-welded. UT robot motion, specimen visibility, X-ray exposure and phase events are gated on welding.
+- Non-welded scans cover the scan interval without UT/X-ray stages. Product route display and stored result metadata describe ScanBox allocation and NDT eligibility.
+- Validation: 60 scene-level checks across six products and phase boundaries; all six CMM initial/remeasurement routing tests passed. Browser verified door on 8160 and doortrim on 5130 with NDT excluded.
