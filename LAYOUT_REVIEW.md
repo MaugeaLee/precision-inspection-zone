@@ -67,3 +67,8 @@ ZEISS 공식 8/6/3 제품 사진을 참고하여 흰색 본체·검은색 베이
 - Welding is a separate recipe attribute. Demo hood/door variants are assumed welded assemblies; remaining variants are non-welded. UT robot motion, specimen visibility, X-ray exposure and phase events are gated on welding.
 - Non-welded scans cover the scan interval without UT/X-ray stages. Product route display and stored result metadata describe ScanBox allocation and NDT eligibility.
 - Validation: 60 scene-level checks across six products and phase boundaries; all six CMM initial/remeasurement routing tests passed. Browser verified door on 8160 and doortrim on 5130 with NDT excluded.
+
+## ScanBox selection fix (2026-10-26)
+- Scanner geometry carries distinct 8160/5130 selection identities. Each identity targets its own world position instead of the shared SCAN/UT docking position.
+- Added dedicated scanner list buttons and pointer/keyboard-enabled labels. Shared SCAN selection frames the complete inspection row.
+- Browser verification: both list buttons update the camera and equipment heading; direct 8160 mesh click switches selection; label Enter activation works.

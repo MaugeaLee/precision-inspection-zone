@@ -17,7 +17,7 @@ const $=id=>document.getElementById(id);
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
 let planScene;
-let engine,renderer,scene,camera,controls,labelRenderer,selected=null,running=true,halted=false,speed=1,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
+let engine,renderer,scene,camera,controls,labelRenderer,selected=null,selectedEquipment=null,running=true,halted=false,speed=1,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
 const viewport=$('viewport');
 const names={DOCK:'시료 접수·도킹',VIS:'ZEISS ABIS III · AIMAX',SCAN:'3D·UT·X-ray 복합검사',OINS:'ZEISS O-INSPECT 8/6/3',MMZ:'ZEISS MMZ G',JUDGE:'AI 판정·결과 버퍼'};
 let toastTimer;
@@ -44,7 +44,7 @@ async function init(){
     catch(e){console.warn('기본 도형 모델로 전환합니다.',e);RENDER.loaded=false;toast('기본 장비 모델로 실행합니다.');}
     await loadShapes();
     engine=new InspectionSession(scene);
-    planScene=new PlanScene(engine,scene,focusPlan);
+    planScene=new PlanScene(engine,scene,focusPlan);planScene.onEquipmentFocus=focusCell;
     engine.onEvent(()=>renderLog());
     makeFloor();contactShadows(scene,[...engine.order.map(c=>[c.def.x,c.def.z-3.7,7,6]),[34,-14,7,6],[42,-14,6,5],[60,-14,7,6]]);makeSourceBays();makeCellList();bindControls();makeRoute();
     for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];c.el.addEventListener('pointerdown',e=>{e.stopPropagation();focusCell(c.id);});for(const p of c.plates)p.visible=false;}
@@ -72,15 +72,16 @@ function makeSourceBays(){
 function makeCellList(){
   $('cell-list').innerHTML=PLAN.map(p=>`<button class="cell-row" data-plan="${p.id}"><span class="cell-number">${p.id.slice(-1)}</span><span><strong>${p.short}</strong><small>검사 · 모니터링</small><span id="plan-state-${p.id}" class="state">대기</span></span></button>`).join('')+`<div class="station-links">${engine.order.map(c=>`<button data-cell="${c.id}">${c.id==='DOCK'?'공용 반입':names[c.id]}</button>`).join('')}</div>`;
   document.querySelectorAll('[data-plan]').forEach(b=>b.onclick=()=>focusPlan(b.dataset.plan));
-  document.querySelectorAll('[data-cell]').forEach(b=>b.onclick=()=>focusCell(b.dataset.cell));
+  const links=$('cell-list').querySelector('.station-links');for(const id of ['8160','5130']){const b=document.createElement('button');b.dataset.cell='SCAN';b.dataset.equipment=id;b.textContent='ScanBox '+id;links.append(b);}
+  document.querySelectorAll('[data-cell]').forEach(b=>b.onclick=()=>focusCell(b.dataset.cell,b.dataset.equipment));
 }
-function focusPlan(id){const p=PLAN.find(p=>p.id===id),distance=Math.max(12,Math.max(p.w,p.d)*1.05);selected=id;planScene.focus=id;cameraGoal={target:new THREE.Vector3(p.x,.7,p.z),position:new THREE.Vector3(p.x+distance,distance,p.z+distance)};updateFocus();}
+function focusPlan(id){const p=PLAN.find(p=>p.id===id),distance=Math.max(12,Math.max(p.w,p.d)*1.05);selected=id;selectedEquipment=null;planScene.focus=id;cameraGoal={target:new THREE.Vector3(p.x,.7,p.z),position:new THREE.Vector3(p.x+distance,distance,p.z+distance)};updateFocus();}
 function bindControls(){
   $('pdf-cells').onclick=showPDFCells;$('ocs-view').onclick=showOCS;
   $('play').onclick=()=>{running=!running;renderPlay();};
   document.querySelectorAll('[data-speed]').forEach(b=>b.onclick=()=>{speed=Number(b.dataset.speed);document.querySelectorAll('[data-speed]').forEach(x=>x.classList.toggle('active',x===b));});
   $('reset').onclick=()=>{stopRecording();restart();toast('검사 시연을 초기화했습니다.');};
-  $('overview').onclick=()=>{selected=null;planScene.focus=null;$('focus-card').hidden=true;document.querySelectorAll('[data-cell]').forEach(b=>b.classList.remove('active'));cameraGoal={position:new THREE.Vector3(88,70,45),target:new THREE.Vector3(33,0,-12)};};
+  $('overview').onclick=()=>{selected=null;selectedEquipment=null;planScene.focus=null;$('focus-card').hidden=true;document.querySelectorAll('[data-cell]').forEach(b=>b.classList.remove('active'));cameraGoal={position:new THREE.Vector3(88,70,45),target:new THREE.Vector3(33,0,-12)};};
   $('labels').onclick=()=>{showLabels=!showLabels;engine.setLabels(false);planScene.setLabels(showLabels);for(const c of engine.order)for(const p of c.plates)p.visible=false;$('labels').classList.toggle('active',showLabels);$('labels').setAttribute('aria-pressed',showLabels);document.querySelectorAll('.source-label').forEach(el=>el.style.visibility=showLabels?'visible':'hidden');};
   $('data-lines').onclick=()=>{showData=!showData;$('data-lines').classList.toggle('active',showData);$('data-lines').setAttribute('aria-pressed',showData);};
   $('render-quality').onchange=()=>{const high=$('render-quality').value==='high';renderer.setPixelRatio(Math.min(Math.max(devicePixelRatio,high?1.5:1),high?2:1.5));sunQuality(high);resize();};
@@ -97,7 +98,7 @@ function bindControls(){
   // Raycast equipment rather than requiring the small label to be clicked.
   let pointerDown;
   renderer.domElement.addEventListener('pointerdown',e=>pointerDown=[e.clientX,e.clientY]);
-  renderer.domElement.addEventListener('pointerup',e=>{if(!pointerDown||Math.hypot(e.clientX-pointerDown[0],e.clientY-pointerDown[1])>5)return;const rect=renderer.domElement.getBoundingClientRect(),mouse=new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),ray=new THREE.Raycaster();ray.setFromCamera(mouse,camera);for(const hit of ray.intersectObjects(planScene.root.children,true)){let o=hit.object;while(o){if(o.userData.zoneCell){focusCell(o.userData.zoneCell.cellId);return;}o=o.parent;}}});
+  renderer.domElement.addEventListener('pointerup',e=>{if(!pointerDown||Math.hypot(e.clientX-pointerDown[0],e.clientY-pointerDown[1])>5)return;const rect=renderer.domElement.getBoundingClientRect(),mouse=new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),ray=new THREE.Raycaster();ray.setFromCamera(mouse,camera);for(const hit of ray.intersectObjects(planScene.root.children,true)){let o=hit.object;while(o){if(o.userData.zoneCell){focusCell(o.userData.zoneCell.cellId,o.userData.zoneCell.equipment);return;}o=o.parent;}}});
 }
 function restart(){
   engine.restart(mode);engine.wallG.visible=false;for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];for(const p of c.plates)p.visible=false;}
@@ -105,14 +106,15 @@ function restart(){
 }
 function seedDemo(){engine.enqueue('hood','ok');engine.enqueue('hblock','uncertain');engine.enqueue('eaxle','ng');}
 function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재생';$('play').setAttribute('aria-label',running?'일시정지':'재생');}
-function focusCell(id){
-  if(!engine.cells[id])return;selected=id;planScene.focus=id;const c=engine.cells[id];
+function focusCell(id,equipment=null){
+  if(!engine.cells[id])return;selected=id;selectedEquipment=planScene.scanBoxes?.[equipment]?equipment:null;planScene.focus=id;const c=engine.cells[id];
   cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-3.5),position:new THREE.Vector3(c.def.x+7.8,6.3,c.def.z+4)};
-  document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id));updateFocus();
+  if(selectedEquipment){const at=planScene.scanBoxes[selectedEquipment].g.getWorldPosition(new THREE.Vector3());cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.5,0)),position:at.clone().add(new THREE.Vector3(6,6,9))};}else if(id==='SCAN'){cameraGoal={target:new THREE.Vector3(47,1,-14),position:new THREE.Vector3(62,19,13)};}
+  document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id&&(b.dataset.equipment||null)===selectedEquipment));updateFocus();
 }
 function updateFocus(){
   if(!selected)return;const plan=PLAN.find(p=>p.id===selected);if(plan){$('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">Cell ${plan.id.slice(-1)}</div><h3>${plan.name}</h3><p>${plan.description}</p><p>${PDF_CELLS[Number(plan.id.slice(-1))-1].checks}</p><p class="detail-note">PDF ${PDF_CELLS[Number(plan.id.slice(-1))-1].pages}쪽 · 상단 ‘PDF 셀 구성’에서 장비 목록 확인</p>`;return;}const c=engine.cells[selected],fault=engine.equipment[selected].state;
-  $('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">QIS-${selected}</div><h3>${names[selected]}</h3><p>${escape(c.def.use)}</p><div class="detail-grid"><div><span>현재 상태</span><b>${halted?'보호정지':fault!=='IDLE'?fault==='DOWN'?'이상':'점검 중':c.state==='BUSY'?'검사 중':c.state==='DONE'?'인계 대기':'대기'}</b></div><div><span>작업 진행</span><b>${Math.round(c.progress*100)}%</b></div><div><span>기준 사이클</span><b>${Math.round(c.def.cycle*engine.mul)}s</b></div><div><span>작업 완료</span><b>${c.done}회</b></div></div><p class="motion-step">${escape(planScene.visuals[selected]?.motionText||"대기")}</p><p class="detail-note">제품 표면 기반 예시 경로 · 장비별 검사 순서 모사</p>`;
+  $('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">QIS-${selected}</div><h3>${selectedEquipment?planScene.scanBoxes[selectedEquipment].name:names[selected]}</h3><p>${selectedEquipment?(selectedEquipment==='8160'?'대형 후드·도어 · ATOS 5X':'중소형 검사물 · ATOS 5'):escape(c.def.use)}</p><div class="detail-grid"><div><span>현재 상태</span><b>${halted?'보호정지':fault!=='IDLE'?fault==='DOWN'?'이상':'점검 중':c.state==='BUSY'?'검사 중':c.state==='DONE'?'인계 대기':'대기'}</b></div><div><span>작업 진행</span><b>${Math.round(c.progress*100)}%</b></div><div><span>기준 사이클</span><b>${Math.round(c.def.cycle*engine.mul)}s</b></div><div><span>작업 완료</span><b>${c.done}회</b></div></div><p class="motion-step">${escape(planScene.visuals[selected]?.motionText||"대기")}</p><p class="detail-note">제품 표면 기반 예시 경로 · 장비별 검사 순서 모사</p>`;
 }
 function makeRoute(){
   const product=$('product').value,ids=['DOCK',...ROUTES[product],'JUDGE'];$('route-product').textContent=PRODUCTS[product][1];$('recipe-route').innerHTML=ids.map(id=>`<span class="node">${id==='SCAN'?scanRecipeLabel(product):CELL_SHORT[id]}</span>`).join('<span>→</span>');
