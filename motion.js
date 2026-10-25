@@ -1,7 +1,8 @@
 import * as T from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
-import {loadShapes} from './shapes.js';
+import {KIT} from './original/factory.js';
+import {loadShapes,makeProduct} from './shapes.js';
 import {PlanScene} from './plan.js';
 const $=id=>document.getElementById(id),scene=new T.Scene(),camera=new T.PerspectiveCamera(38,1,.05,200),renderer=new T.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setClearColor(0x20343f);renderer.toneMapping=T.ACESFilmicToneMapping;renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;$('view').append(renderer.domElement);
@@ -12,8 +13,9 @@ try{
  const order=[['VIS',35,-24],['SCAN',51,-10],['OINS',44,-24],['MMZ',52,-24],['JUDGE',57,5]].map(([id,x,z])=>({id,def:{x,z},g:new T.Group(),state:'BUSY',progress,item:{id:'PREVIEW',product:'hood'}}));
  const engine={time:0,order,cells:Object.fromEntries(order.map(c=>[c.id,c])),records:[],emit(){},spawnPacket(){}};
  const plan=new PlanScene(engine,scene,()=>{});
+ for(const c of order.filter(c=>plan.visuals[c.id].handler)){const g=KIT.makeCarrierAMR();g.position.set(0,0,2.5);plan.visuals[c.id].g.add(g);const pm=makeProduct(c.item.product);pm.position.y=.88;g.add(pm);c.occ={g,pm};}
  function select(){const id=$('device').value;plan.focus=id;plan.root.children.forEach(g=>g.visible=g===plan.visuals[id].g||(id==='SCAN'&&g.userData.zoneCell?.cellId==='SCAN'));const c=engine.cells[id];controls.target.set(id==='SCAN'?47:c.def.x,1.5,id==='SCAN'?-14:c.def.z-3.5);camera.position.copy(controls.target).add(id==='SCAN'?new T.Vector3(15,18,27):id==='VIS'?new T.Vector3(4.5,7.5,6.5):id==='MMZ'?new T.Vector3(6,6,8):new T.Vector3(3.5,4,4.5));controls.update();}
- $('device').onchange=select;$('product').onchange=()=>{order.forEach(c=>c.item.product=$('product').value);};$('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'일시정지':'재생';};$('progress').oninput=()=>{progress=Number($('progress').value)/1000;playing=false;$('play').textContent='재생';};select();
+ $('device').onchange=select;$('product').onchange=()=>{order.forEach(c=>{c.item.product=$('product').value;if(c.occ){c.occ.pm.removeFromParent();c.occ.pm=makeProduct(c.item.product);c.occ.pm.position.y=.88;c.occ.g.add(c.occ.pm);}});};$('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'일시정지':'재생';};$('progress').oninput=()=>{progress=Number($('progress').value)/1000;playing=false;$('play').textContent='재생';};select();
  new ResizeObserver(()=>{renderer.setSize($('view').clientWidth,$('view').clientHeight);camera.aspect=$('view').clientWidth/$('view').clientHeight;camera.updateProjectionMatrix();}).observe($('view'));
  renderer.setAnimationLoop(now=>{const dt=Math.min((now-last)/1000,.05);last=now;if(playing)progress=(progress+dt/70)%1;engine.time=progress*70;order.forEach(c=>c.progress=progress);plan.update();$('progress').value=Math.round(progress*1000);$('percent').textContent=Math.round(progress*100)+'%';$('phase').textContent=plan.visuals[$('device').value].motionText;controls.update();renderer.render(scene,camera);});
 }catch(e){$('phase').textContent='동작 로딩 실패: '+e.message;console.error(e);}
