@@ -28,7 +28,7 @@ export const INSP = {
   // 샘플 수거 위치 (각 Zone 적재장 옆 통로 쪽) — aisle은 공장 통로 동선 계산용 (sim.js route)
   pickup: { main: { x: 21, z: 6.8, aisle: 'F' }, flex: { x: 22.5, z: -11.6, aisle: 'B' }, adapt: { x: 18, z: 11.4, aisle: 'F' } },
   entryZ: -35.5,   // 뒤쪽 통로에서 들어와 접수 도킹 앞에서 대기하는 줄
-  station: { z: 9.4, xs: [33.3, 35.2, 37.1], exitZ: 6.6 },   // 검사 AMR 대기·무선 충전 — Zone 앞쪽(남쪽) 끝 왼쪽 (앞쪽 통로로 나간다)
+  station: { z: 9.4, xs: [33, 37, 41], exitZ: 6.6 },   // 검사 AMR 대기·무선 충전 — Zone 앞쪽(남쪽) 끝 왼쪽 (앞쪽 통로로 나간다)
   // 오른쪽 벽 (적응가공Zone 전광판·CCTV 전광판과 같은 벽 · 같은 높이 · 같은 0.5m 간격): 적응가공·정밀검사 CCTV 전광판(z −2 ~ 10) 바로 왼쪽에 전광판, 그 왼쪽에 로봇 비전 관제 디스플레이
   wall: { x: 47.8, y: 5.1, z: -2 - 0.5 - 9, rot: -PI / 2, w: 18, h: 4 },
   cams: { x: 47.8, y: 5.1, z: -2 - 0.5 - 18 - 0.5 - 6, rot: -PI / 2, w: 12, h: 4 },
@@ -168,7 +168,7 @@ export class InspZone {
     put(textPlane(['검사 AMR 대기·충전'], 5.2, 0.6), INSP.station.xs[1], 0.02, INSP.station.z + 1.5, g);
     for (let i = 0; i < INSP.amr.count; i++) put(textPlane(['접수 대기'], 1.6, 0.4), this.entryX(i), 0.02, INSP.entryZ - 1.05, g);
   }
-  entryX(i) { return INSP.cells.DOCK.x - 1.8 + i * 1.8; }
+  entryX(i) { return 44 + i * 4; }
   buildCells() {
     for (const [id, d] of Object.entries(INSP.cells)) {
       const g = put(new THREE.Group(), d.x, 0, d.z, this.G);
@@ -420,7 +420,7 @@ export class InspZone {
     const S = INSP;
     switch (c.state) {
       case 'out': case 'in': case 'move': case 'home': {
-        if (this.blocked(c)) { c.wait += dt; if (c.wait < 20) break; } else c.wait = 0;
+        if (this.blocked(c)) { c.wait += dt; break; } else c.wait = 0;
         c.s = Math.min(c.L, c.s + S.amr.speed * dt);
         const p = pointAt(c.path, c.s), dx = p.x - c.x, dz = p.z - c.z; if (dx * dx + dz * dz > 1e-8) c.heading = Math.atan2(dx, dz); c.x = p.x; c.z = p.z;
         if (c.s < c.L - 1e-6) break;

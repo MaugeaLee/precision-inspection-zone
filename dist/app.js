@@ -1,3 +1,4 @@
+import {corridorPath} from './traffic.js';
 import {floorMaterial,contactShadows} from './render-quality.js';
 import {PDF_CELLS} from './pdf-cells.js';
 import {loadShapes} from './shapes.js';
@@ -17,7 +18,7 @@ const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=
 let planScene;
 let engine,renderer,scene,camera,controls,labelRenderer,selected=null,running=true,halted=false,speed=1,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
 const viewport=$('viewport');
-const names={DOCK:'시료 접수·도킹',VIS:'ZEISS ABIS III · AIMAX',SCAN:'3D·UT·X-ray 복합검사',OINS:'ZEISS O-INSPECT 8/6/3',MMZ:'ZEISS MMZ M',JUDGE:'AI 판정·결과 버퍼'};
+const names={DOCK:'시료 접수·도킹',VIS:'ZEISS ABIS III · AIMAX',SCAN:'3D·UT·X-ray 복합검사',OINS:'ZEISS O-INSPECT 8/6/3',MMZ:'ZEISS MMZ G',JUDGE:'AI 판정·결과 버퍼'};
 let toastTimer;
 function toast(message){$('toast').textContent=message;$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3500);}
 function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
@@ -51,14 +52,16 @@ async function init(){
   }catch(error){console.error(error);$('loader').innerHTML='<strong>3D 화면을 시작하지 못했습니다.</strong><small>WebGL2 지원 브라우저에서 다시 열어 주세요.</small><small>'+escape(error.message)+'</small>';}
 }
 function makeFloor(){
-  const floor=new THREE.Mesh(new THREE.BoxGeometry(66,.25,48),floorMaterial());floor.position.set(33,-.19,-13);floor.receiveShadow=true;scene.add(floor);
+  const floor=new THREE.Mesh(new THREE.BoxGeometry(66,.25,54),floorMaterial());floor.position.set(33,-.19,-16);floor.receiveShadow=true;scene.add(floor);
   const grid=new THREE.GridHelper(66,66,0x779594,0x718a8b);grid.position.set(33,-.055,-13);grid.scale.z=48/66;grid.material.transparent=true;grid.material.opacity=.1;scene.add(grid);
   const curbMat=new THREE.MeshStandardMaterial({color:0x243c45,roughness:.7});
-  for(const z of [-37,11]){const curb=new THREE.Mesh(new THREE.BoxGeometry(66,.4,.2),curbMat);curb.position.set(33,-.01,z);scene.add(curb);}
+  for(const z of [-43,11]){const curb=new THREE.Mesh(new THREE.BoxGeometry(66,.4,.2),curbMat);curb.position.set(33,-.01,z);scene.add(curb);}
   const laneMat=new THREE.MeshBasicMaterial({color:0x6acfb9,transparent:true,opacity:.4});
-  for(let z=-31;z<9;z+=1.5){const dash=new THREE.Mesh(new THREE.PlaneGeometry(.07,.8),laneMat);dash.rotation.x=-Math.PI/2;dash.position.set(29.4,.006,z);scene.add(dash);}
+  for(let z=-39;z<7;z+=1.5){const dash=new THREE.Mesh(new THREE.PlaneGeometry(.07,.8),laneMat);dash.rotation.x=-Math.PI/2;dash.position.set(29.4,.006,z);scene.add(dash);}
 }
 function makeSourceBays(){
+  for(const z of [-39,-21,-7,6.5]){const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(29.4,.008,z),new THREE.Vector3(59,.008,z)]),new THREE.LineDashedMaterial({color:0x78cdb8,dashSize:.6,gapSize:.4,transparent:true,opacity:.35}));line.computeLineDistances();scene.add(line);}
+
   const material=new THREE.MeshStandardMaterial({color:0x254b52,roughness:.8});
   for(const [i,name]of ['정밀조립','유연생산','적응가공'].entries()){
     const x=[33.5,37,40.5][i];const pad=new THREE.Mesh(new THREE.BoxGeometry(2.7,.08,2),material);pad.position.set(x,.01,-31.5);pad.receiveShadow=true;scene.add(pad);
@@ -113,7 +116,7 @@ function updateFocus(){
 function makeRoute(){
   const product=$('product').value,ids=['DOCK',...ROUTES[product],'JUDGE'];$('route-product').textContent=PRODUCTS[product][1];$('recipe-route').innerHTML=ids.map(id=>`<span class="node">${CELL_SHORT[id]}</span>`).join('<span>→</span>');
   if(routeLine){scene.remove(routeLine);routeLine.geometry.dispose();routeLine.material.dispose();}
-  const points=[];for(let i=0;i<ids.length;i++){const d=INSP.cells[ids[i]];if(i){const p=INSP.cells[ids[i-1]];points.push(new THREE.Vector3(INSP.lane,.09,p.z),new THREE.Vector3(INSP.lane,.09,d.z));}points.push(new THREE.Vector3(d.x,.09,d.z));}
+  const points=[];for(let i=1;i<ids.length;i++)for(const p of corridorPath(INSP.cells[ids[i-1]],INSP.cells[ids[i]]))points.push(new THREE.Vector3(p.x,.09,p.z));
   routeLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color:0x97ffe3,transparent:true,opacity:.38}));scene.add(routeLine);
 }
 function renderLog(){
@@ -125,7 +128,7 @@ function updateUI(){
   $('agent-state').textContent=halted?'보호정지 · 재개 대기':!running?'시연 일시정지':s.active?'검사 작업 조정 중':'샘플 요청 대기';
   for(const c of engine.order){const fault=engine.equipment[c.id].state,label=halted?'보호정지':fault==='DOWN'?'설비 이상':fault==='MAINT'?'점검 중':c.state==='BUSY'?'검사 중 · '+(c.item?.id??''):c.state==='DONE'?'후속 셀 대기':'대기';}
   for(const p of PLAN){const el=$('plan-state-'+p.id),cs=p.nodes.map(id=>engine.cells[id]);el.textContent=halted?'보호정지':!running?'일시정지':!cs.length?'순찰·점검 중':cs.some(c=>c.fault)?'설비 점검':cs.some(c=>c.state==='BUSY')?'검사·작업 중':'대기';}
-  $('amr-list').innerHTML=engine.carriers.map(c=>`<div class="amr-item"><span class="amr-icon">▱</span><div><strong>${c.uid}</strong><p class="${c.state==='park'?'':'moving'}">${halted?'보호정지':vehicleState[c.state]??c.state}${c.item?' · '+escape(PRODUCTS[c.item.product][1]):''}</p></div></div>`).join('');
+  $('amr-list').innerHTML=engine.carriers.map(c=>`<div class="amr-item"><span class="amr-icon">▱</span><div><strong>${c.uid}</strong><p class="${c.state==='park'?'':'moving'}">${halted?'보호정지':c.trafficWaiting?'통로 예약 대기':vehicleState[c.state]??c.state}${c.item?' · '+escape(PRODUCTS[c.item.product][1]):''}</p></div></div>`).join('');
   engine.updateLabels();if(halted)for(const c of engine.order)c.chip.textContent='보호정지';updateFocus();
 }
 function resize(){const {width,height}=viewport.getBoundingClientRect();if(!width||!height)return;renderer.setSize(width,height);labelRenderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}
@@ -146,7 +149,7 @@ function showHistory(){
   $('export-csv').onclick=()=>{const columns=['sample_id','product_id','product','source_zone','time_seconds','result','remeasured','route','scenario','source'];const quote=v=>'"'+String(v??'').replaceAll('"','""')+'"';download(new Blob(['\ufeff'+[columns.join(','),...engine.records.map(r=>columns.map(k=>quote(r[k])).join(','))].join('\r\n')],{type:'text/csv;charset=utf-8'}),'QIS_inspection_history.csv');};
   $('export-json').onclick=()=>download(new Blob([JSON.stringify({source:'simulation',mode,records:engine.records,trace:engine.trace,events:engine.events},null,2)],{type:'application/json'}),'QIS_inspection_trace.json');
 }
-function showAbout(){openModal('정밀검사존 · 구성 및 출처',`<p>메타팩토리의 정밀검사존을 독립 실행 화면으로 분리했습니다. 사업계획서의 다섯 셀로 구성하고 공용 반입 구역과 검사 장비를 하위 공정으로 분리했습니다. AMR·판정 상태머신은 원본을 활용합니다.</p><h3>5개 셀 · 장비 구성</h3>${PLAN.map(p=>`<p><b>${p.name}</b><br>${p.description}</p>`).join('')}<p>표면·피처 검사: 두산 H2515. 검사물 이적재: 현대 HDR50-22. 두산 H2515와 현대 HDR50-22는 제조사 공개 메시·URDF 기반입니다.  제품은 원본의 제품별 시각화 모델이며 실물 CAD가 아닙니다. 장비의 셀 내 배치와 검사 경로는 시연 구성안입니다. 비전검사 부스는 첨부 도면을 참고한 시연 형상이며, 생산·조립·물류 구역은 공장 전역 순찰을 보여 주는 개념 배치입니다.</p><h3>검사 경로</h3><table><tr><th>제품</th><th>검사 경로 (접수·판정 공통)</th></tr><tr><td>후드 · 도어 · 도어트림</td><td>비전검사 → 3D·UT·X-ray 시연</td></tr><tr><td>e-axle</td><td>비전검사 → O-INSPECT</td></tr><tr><td>유압블록 · 리어커버</td><td>MMZ M → O-INSPECT</td></tr></table><h3>시연 범위</h3><p>검사 동작·OK/불확실/NG·설비 이상·복구·품질 환류 요청을 모사합니다. 실제 검사장비·PLC·MQTT·AI 모델과 연결되어 있지 않습니다. 실제 도입 장비의 수량·정확도·검출 성능을 나타내지 않습니다.</p><p>불확실 판정은 O-INSPECT 재측정 후 재판정합니다. NG는 보류·리워크 검토·선행공정 보정 요청으로 기록하며, 생산 Zone의 실제 재작업 완료를 모사하지 않습니다.</p><h3>조작·영상 저장</h3><p>드래그: 회전 / 휠: 확대 / 오른쪽 드래그: 이동 / Space: 재생·일시정지 / Esc: 전체 보기. 녹화는 3D 장면·셀 라벨·시각·판정 실적을 포함한 1920×1080 WebM 영상으로 저장합니다.</p><h3>출처</h3><p><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">피지컬AI 실증 메타팩토리 · Jin Park</a><br><a href="https://github.com/theuniversepark/meta-factory" target="_blank" rel="noopener">원본 공개 저장소</a> · package.json ISC 표기<br>three.js · MIT · <a href="./vendor/three/LICENSE" target="_blank" rel="noopener">라이선스</a><br><a href="./assets/ORIGINAL_OPEN_SOURCE.md" target="_blank" rel="noopener">원본 오픈소스 고지</a> · <a href="./assets/source.json" target="_blank" rel="noopener">참조 소스 버전</a></p>`);}
+function showAbout(){openModal('정밀검사존 · 구성 및 출처',`<p>메타팩토리의 정밀검사존을 독립 실행 화면으로 분리했습니다. 사업계획서의 다섯 셀로 구성하고 공용 반입 구역과 검사 장비를 하위 공정으로 분리했습니다. AMR·판정 상태머신은 원본을 활용합니다.</p><h3>5개 셀 · 장비 구성</h3>${PLAN.map(p=>`<p><b>${p.name}</b><br>${p.description}</p>`).join('')}<p>표면·피처 검사: 두산 H2515. 검사물 이적재: 현대 HDR50-22. 두산 H2515와 현대 HDR50-22는 제조사 공개 메시·URDF 기반입니다.  제품은 원본의 제품별 시각화 모델이며 실물 CAD가 아닙니다. 장비의 셀 내 배치와 검사 경로는 시연 구성안입니다. 비전검사 부스는 첨부 도면을 참고한 시연 형상이며, 생산·조립·물류 구역은 공장 전역 순찰을 보여 주는 개념 배치입니다.</p><h3>검사 경로</h3><table><tr><th>제품</th><th>검사 경로 (접수·판정 공통)</th></tr><tr><td>후드 · 도어 · 도어트림</td><td>비전검사 → 3D·UT·X-ray 시연</td></tr><tr><td>e-axle</td><td>비전검사 → O-INSPECT</td></tr><tr><td>유압블록 · 리어커버</td><td>MMZ G → O-INSPECT</td></tr></table><h3>시연 범위</h3><p>검사 동작·OK/불확실/NG·설비 이상·복구·품질 환류 요청을 모사합니다. 실제 검사장비·PLC·MQTT·AI 모델과 연결되어 있지 않습니다. 실제 도입 장비의 수량·정확도·검출 성능을 나타내지 않습니다.</p><p>불확실 판정은 O-INSPECT 재측정 후 재판정합니다. NG는 보류·리워크 검토·선행공정 보정 요청으로 기록하며, 생산 Zone의 실제 재작업 완료를 모사하지 않습니다.</p><h3>조작·영상 저장</h3><p>드래그: 회전 / 휠: 확대 / 오른쪽 드래그: 이동 / Space: 재생·일시정지 / Esc: 전체 보기. 녹화는 3D 장면·셀 라벨·시각·판정 실적을 포함한 1920×1080 WebM 영상으로 저장합니다.</p><h3>출처</h3><p><a href="https://theuniversepark.github.io/meta-factory/" target="_blank" rel="noopener">피지컬AI 실증 메타팩토리 · Jin Park</a><br><a href="https://github.com/theuniversepark/meta-factory" target="_blank" rel="noopener">원본 공개 저장소</a> · package.json ISC 표기<br>three.js · MIT · <a href="./vendor/three/LICENSE" target="_blank" rel="noopener">라이선스</a><br><a href="./assets/ORIGINAL_OPEN_SOURCE.md" target="_blank" rel="noopener">원본 오픈소스 고지</a> · <a href="./assets/source.json" target="_blank" rel="noopener">참조 소스 버전</a></p>`);}
 function startRecording(){
   if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){toast('이 브라우저는 영상 녹화를 지원하지 않습니다.');return;}
   recordCanvas=document.createElement('canvas');recordCanvas.width=1920;recordCanvas.height=1080;recordContext=recordCanvas.getContext('2d');drawRecording();
