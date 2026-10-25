@@ -56,3 +56,8 @@ ZEISS 공식 8/6/3 제품 사진을 참고하여 흰색 본체·검은색 베이
 - Validation: 528 scene ownership/pose checks across six products and four stations; maximum sampled IK residual 5.3 mm. Existing 36-request traffic regression completes, including six remeasurements and twelve faults.
 - Concept animation: gripper orientation is stabilized, not a validated six-axis tool-orientation program. SCAN internal ATOS/UT/X-ray stage transitions retain the existing schematic display; AMR-to-staging-fixture handoff is updated.
 
+
+## Product routing and handling tools (2026-10-25)
+- Demo classification: hood/door -> MMZ G; doortrim/e-axle/hblock/rcover -> O-INSPECT. Same policy for initial inspection, uncertain-result remeasurement, and preview selection.
+- Four-pad vacuum tooling for large panels, dimensioned opening/closing parallel jaws for remaining products. Tool mount, actuator and gripping indicator visible. Illustrative tooling, not validated engineering design or machine capacity certification.
+- Six uncertain scenarios each completed two measurements on only their permitted CMM; 528 transfer ownership checks and the 36-request traffic regression passed. Preview verified both tool types and disabled incompatible product choices.
