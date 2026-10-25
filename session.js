@@ -1,3 +1,4 @@
+import {scanRecipeLabel,scanBoxFor,requiresNDT} from './product-policy.js';
 import {restorePayload} from './transfer.js';
 import {TrafficReservations,MOVING,corridorPath} from './traffic.js';
 import {makeProduct} from './shapes.js';
@@ -41,7 +42,7 @@ export class InspectionSession extends InspZone {
     const zone=PRODUCTS[product][0],id=`QS-${String(++this.seq).padStart(4,'0')}`;
     const req={id,serial:`DEMO-${product.toUpperCase()}-${String(this.seq).padStart(4,'0')}`,zone,product,scenario,t0:this.time,stageTrace:[]};
     this.queue.push(req);this.stats.samples++;
-    this.emit('info','샘플 접수 요청 · '+id,{obs:INSP.zones[zone]+' / '+PRODUCTS[product][1],dec:'검사 레시피: '+ROUTES[product].map(k=>CELL_SHORT[k]).join(' → '),act:'검사 AMR 배차 대기'});
+    this.emit('info','샘플 접수 요청 · '+id,{obs:INSP.zones[zone]+' / '+PRODUCTS[product][1],dec:'검사 레시피: '+ROUTES[product].map(k=>k==='SCAN'?scanRecipeLabel(product):CELL_SHORT[k]).join(' → '),act:'검사 AMR 배차 대기'});
     return true;
   }
   attach(c){const m=makeProduct(c.item.product);m.position.set(0,KIT.BELT_Y-.02,0);c.g.add(m);c.pm=m;}
@@ -95,7 +96,7 @@ export class InspectionSession extends InspZone {
     for(const c of this.carriers){
       if(c.state==='work'&&c.item&&c.item.stageTrace?.at(-1)?.cell!==c.at){
         const entry={cell:c.at,time:this.time};c.item.stageTrace.push(entry);this.trace.push({sample:c.item.id,product:c.item.product,...entry});
-        this.emit('info',CELL_SHORT[c.at]+' 시작 · '+c.item.id,{obs:PRODUCTS[c.item.product][1],act:c.at==='JUDGE'?'검사 누락·데이터 유효성 확인 후 판정':this.cells[c.at].def.use});
+        this.emit('info',CELL_SHORT[c.at]+' 시작 · '+c.item.id,{obs:PRODUCTS[c.item.product][1],act:c.at==='JUDGE'?'검사 누락·데이터 유효성 확인 후 판정':c.at==='SCAN'?scanRecipeLabel(c.item.product):this.cells[c.at].def.use});
       }
     }
   }
@@ -108,7 +109,7 @@ export class InspectionSession extends InspZone {
   }
   push(it,res){
     super.push(it,res);
-    this.records.push({sample_id:it.id,product_id:it.serial,product:PRODUCTS[it.product][1],source_zone:INSP.zones[it.zone],time_seconds:Math.round(this.time),result:RESULT[res],remeasured:!!it.rechecked,route:it.stageTrace.map(s=>s.cell).join(' → '),scenario:it.scenario,source:'simulation'});
+    this.records.push({sample_id:it.id,product_id:it.serial,product:PRODUCTS[it.product][1],source_zone:INSP.zones[it.zone],time_seconds:Math.round(this.time),result:RESULT[res],remeasured:!!it.rechecked,route:it.stageTrace.map(s=>s.cell).join(' → '),scenario:it.scenario,source:'simulation',scanbox:ROUTES[it.product].includes('SCAN')?scanBoxFor(it.product):null,ndt:ROUTES[it.product].includes('SCAN')&&requiresNDT(it.product)});
     if(res==='ok')this.emit('info','OK 판정 · '+it.id,{obs:'필수 검사 완료 · 시나리오 기준 충족',dec:'Quality & Recovery Agent · 정상 반출',act:'QMS 품질이력 기록 · AMR 복귀'});
   }
   injectFault(id='VIS'){
