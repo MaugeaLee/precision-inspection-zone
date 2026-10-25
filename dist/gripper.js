@@ -11,6 +11,7 @@ export function makeHandlingTool(){
  for(const side of [-1,1]){const jaw=new T.Group();clamp.add(jaw);box(jaw,.045,.16,.18,0,-.045,0,metal);box(jaw,.018,.065,.15,-side*.028,-.075,0,rubber);jaws.push(jaw);}
  const cross=box(vacuum,1,.045,.07,0,.015,0,metal),bars=[],cups=[];
  for(const x of [-1,1]){bars.push(box(vacuum,.055,.04,1,x,.005,0,metal));for(const z of [-1,1]){const cup=new T.Group();vacuum.add(cup);cylinder(cup,.025,.04,-.025,metal);cylinder(cup,.065,.035,-.0625,rubber);cups.push({cup,x,z});}}
+ vacuum.visible=false;rail.scale.x=.56;jaws.forEach((jaw,i)=>jaw.position.x=(i?1:-1)*.25);
  const lamp=box(root,.045,.025,.045,.07,.175,0,new T.MeshBasicMaterial({color:0xf4b04b}));
  return {root,update(product,size,closed,rotation){root.quaternion.copy(rotation);const large=LARGE_PRODUCTS.has(product);vacuum.visible=large;clamp.visible=!large;
   const width=Math.max(.16,size.x);rail.scale.x=width+.26;jaws.forEach((j,i)=>j.position.x=(i?1:-1)*(width/2+.037+(1-closed)*.10));
