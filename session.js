@@ -1,12 +1,13 @@
+import {TrafficReservations,MOVING,corridorPath} from './traffic.js';
 import {makeProduct} from './shapes.js';
 import {KIT} from './original/factory.js';
 import {InspZone,INSP} from './original/inspzone.js';
 
 export const PRODUCTS=INSP.products;
 export const ROUTES=INSP.routes;
-export const CELL_SHORT={DOCK:'접수·도킹',VIS:'ABIS III · AIMAX',SCAN:'3D·UT·X-ray',OINS:'O-INSPECT',MMZ:'MMZ M',JUDGE:'AI 판정'};
+export const CELL_SHORT={DOCK:'접수·도킹',VIS:'ABIS III · AIMAX',SCAN:'3D·UT·X-ray',OINS:'O-INSPECT',MMZ:'MMZ G',JUDGE:'AI 판정'};
 export const RESULT={ok:'OK',unc:'불확실',ng:'NG'};
-export const vehicleState={park:'대기·충전',out:'반입 구역으로 이동',load:'샘플 인수',in:'시료 접수로 이송',queue:'접수 대기',move:'검사 셀로 이동',work:'검사 중',ready:'후속 셀 대기',home:'스테이션 복귀'};
+export const vehicleState={park:'대기·충전',out:'반입 구역으로 이동',load:'샘플 인수',in:'시료 접수로 이송',queue:'접수 대기',move:'검사 셀로 이동',work:'검사 중',ready:'후속 셀 대기',home:'스테이션 복귀',buffer:'교착 방지 대기소 이동',buffered:'후속 셀 진입 대기'};
 
 // The original inspection equipment and state machine run independently of the other Zones.
 // Manufacturing sample requests and feedback acknowledgements are explicitly simulated here.
@@ -22,7 +23,7 @@ export class InspectionSession extends InspZone {
     this.events=[];this.records=[];this.trace=[];
     for(const c of Object.values(this.equipment))Object.assign(c,{state:'IDLE',remaining:0,busy:false});
     mode='dark';this.sim.mode.key=mode;super.setup(this.sim,null,true);this.wallG.visible=false;
-    this.sourceTimer=0;this.autoIndex=0;this.sim.extMovers=this.carriers.map(c=>this.tele(c));
+    this.traffic=new TrafficReservations();this.sourceTimer=0;this.autoIndex=0;this.sim.extMovers=this.carriers.map(c=>this.tele(c));
     this.emit('info','정밀검사존 준비 완료',{obs:'5개 사업계획 셀 · 검사 AMR 3대',dec:'피지컬AI 시연 모드',act:'샘플 반입 요청 대기'});
   }
   onEvent(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
@@ -43,14 +44,39 @@ export class InspectionSession extends InspZone {
   }
   attach(c){const m=makeProduct(c.item.product);m.position.set(0,KIT.BELT_Y-.02,0);c.g.add(m);c.pm=m;}
   sampleTick(){} // Production throughput is outside this independent Zone.
+  inPath(a,b){return corridorPath(a,b);}
   go(c,pts,state){
-    if(state==='out'){
-      const pickupX=[33.5,37,40.5][{main:0,flex:1,adapt:2}[c.item.zone]];
-      pts=[{x:c.x,z:c.z},{x:c.x,z:7.8},{x:29.4,z:7.8},{x:29.4,z:-31.5},{x:pickupX,z:-31.5}];
-    }else if(state==='in'){
-      pts=[{x:c.x,z:c.z},{x:this.entryX(c.i),z:-31.5},{x:this.entryX(c.i),z:INSP.entryZ}];
+    let destination=pts.at(-1);
+    if(state==='out')destination={x:[33.5,37,40.5][{main:0,flex:1,adapt:2}[c.item.zone]],z:-31.5};
+    else if(state==='in')destination={x:this.entryX(c.i),z:INSP.entryZ};
+    else if(state==='move')destination=this.cells[c.target].def;
+    else if(state==='home'||state==='buffer')destination={x:INSP.station.xs[c.i],z:INSP.station.z};
+    super.go(c,corridorPath(c,destination),state);
+    (this.traffic??=new TrafficReservations()).request(c);
+  }
+  blocked(c){return !this.traffic.acquire(c,this.carriers);}
+  stepCarrier(c,dt){
+    if(c.state==='queue'){
+      const dock=this.cells.DOCK;if(dock.occ||dock.fault)return;
+      dock.occ=c;c.target='DOCK';this.go(c,[c,dock.def],'move');return;
     }
-    super.go(c,pts,state);
+    if(c.state==='ready'&&c.item){
+      if(c.at!=='DOCK'&&c.at!=='JUDGE')c.item.done.add(c.at);
+      const next=this.nextOf(c),dest=this.cells[next];
+      if(dest?.occ){
+        const cur=this.cells[c.at];cur.occ=null;cur.state='IDLE';cur.item=null;cur.progress=0;
+        c.bufferNext=next;c.at=null;this.go(c,[c],'buffer');return;
+      }
+    }
+    if(c.state==='buffered'){
+      const dest=this.cells[c.bufferNext];if(dest.occ||dest.fault)return;
+      dest.occ=c;c.target=c.bufferNext;if(c.item.redo)c.item.redo=false;
+      this.go(c,[c,dest.def],'move');return;
+    }
+    const buffer=c.state==='buffer';if(buffer)c.state='home';
+    super.stepCarrier(c,dt);
+    if(buffer)c.state=c.state==='park'?'buffered':'buffer';
+    if(!MOVING.has(c.state))this.traffic.release(c);
   }
   tick(dt,halted,auto){
     if(!halted){
