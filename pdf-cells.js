@@ -1,3 +1,4 @@
+import {buildScanBox} from './scanbox.js';
 import {scanStage} from './product-policy.js';
 import {measurementMotion,makeInspectionTrace,smooth} from './inspection-motion.js';
 import {panelGeometry} from './render-quality.js';
@@ -20,9 +21,8 @@ function text(g,s,x,y,z){const e=document.createElement('div');e.className='equi
 function darkMaterial(){return new T.MeshStandardMaterial({color:0x24313f});}
 function group(root,x,z){const g=new T.Group();g.position.set(x,0,z);root.add(g);return g;}
 function rack(g,x,z){box(g,.65,1.8,.65,x,.9,z,black);for(let y=.25;y<1.7;y+=.23){box(g,.55,.13,.04,x,y,z+.34,gray);box(g,.06,.04,.02,x+.2,y,z+.37,blue);}}
-function scanner(root,x,z,w,name){const g=group(root,x,z);g.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(g,w,.15,3.6,0,.075,0,gray);box(g,w,3.5,.18,0,1.75,-1.7,gray);for(const side of [-1,1])box(g,.2,3.5,3.6,side*w/2,1.75,0,gray);box(g,w,.3,3.6,0,3.5,0,gray);box(g,w-.8,.7,2,0,.5,0,black);const sample=new T.Group();sample.position.y=.9;g.add(sample);const sensor=new T.Group();g.add(sensor);box(sensor,.38,.18,.18,0,0,0,blue);for(const x of [-.13,.13])box(sensor,.07,.07,.02,x,0,.10,black);box(sensor,.06,.06,.02,0,0,.10,white);const rail=box(g,w-.5,.1,.12,0,3.15,0,metal);const mast=box(g,.08,1,.08,0,2.6,0,gray);const trace=makeInspectionTrace(g,0x64caff);const lamp=box(g,.15,.2,.15,w/2-.2,3.85,1.5,gold);text(g,name,0,4.2,0);text(g,'형상 · CAD 편차',0,.25,1.9);for(const x of [-w/2+.25,w/2-.25])box(g,.1,.1,3,x,3.15,0,metal);return {g,sample,sensor,lamp,mast,trace,rail};}
 export function buildPDFCells(root,engine,plan){
- const large=scanner(root,34,-14,5.5,'ATOS ScanBox 8160 · 대형 후드/도어');const small=scanner(root,42,-14,4,'ATOS ScanBox 5130 · 중소형 검사물');
+ const large=buildScanBox(root,34,-14,'8160');const small=buildScanBox(root,42,-14,'5130');
  plan.scanBoxes={};
  for(const [id,station,name]of [['8160',large,'ATOS ScanBox 8160'],['5130',small,'ATOS ScanBox 5130']]){
   station.g.userData.zoneCell={zone:'insp',cellId:'SCAN',equipment:id};plan.scanBoxes[id]={g:station.g,name};
@@ -39,8 +39,8 @@ export function buildPDFCells(root,engine,plan){
  const console=plan.visuals.JUDGE.g;for(const x of [-2.2,-1.1,1.1,2.2])rack(console,x,3);for(const x of [-1.7,0,1.7]){box(console,1.5,.1,.7,x,1.1,-.5,white);box(console,1.1,.6,.08,x,1.55,-.8,blue);}const dashboard=text(console,'QMS · 데이터 허브 · AI 분석',0,4.6,-3.7);
  text(console,'Process Simulation · Opcenter · Amesim',0,.3,4);text(console,'Testlab · Heeds · Insight Hub · 역설계',0,.3,4.5);
  // Separate control pedestals and protective fencing, following the PDF views.
- for(const [x,z]of [[31,-10],[47.5,-10],[63.5,-10]]){const g=group(root,x,z);box(g,.7,1.1,.6,0,.55,0,white);box(g,.5,.35,.05,0,1.25,.27,blue);}
- for(const [x,z,w]of [[35,-22,7],[34,-11.5,6],[42,-11.5,5]]){const g=group(root,x,z);for(const dx of [-w/2,w/2]){box(g,.09,1.2,.09,dx,.6,0,gold);box(g,w/2-1.3,.8,.04,dx/2,.65,0,new T.MeshStandardMaterial({color:0x596e74,transparent:true,opacity:.28,wireframe:true}));}}
+ for(const [x,z]of [[47.5,-10],[63.5,-10]]){const g=group(root,x,z);box(g,.7,1.1,.6,0,.55,0,white);box(g,.5,.35,.05,0,1.25,.27,blue);}
+ for(const [x,z,w]of [[35,-22,7]]){const g=group(root,x,z);for(const dx of [-w/2,w/2]){box(g,.09,1.2,.09,dx,.6,0,gold);box(g,w/2-1.3,.8,.04,dx/2,.65,0,new T.MeshStandardMaterial({color:0x596e74,transparent:true,opacity:.28,wireframe:true}));}}
  // Cell 3: charging cabinet and local status terminal. Cell 4: warehouse racks and dock.
  const gc=group(root,34,3);box(gc,.9,1.8,.6,-2,.9,0,white);box(gc,.55,.55,.05,-2,1.3,.33,blue);
  const dc=group(root,44,3);for(const x of [-2,2])box(dc,.15,2.8,.15,x,1.4,-1.7,gray);box(dc,4.2,.2,.7,0,2.8,-1.7,white);
@@ -55,7 +55,7 @@ export function buildPDFCells(root,engine,plan){
   const phaseKey=phase?c.item.id+':'+phase:null;
   if(phaseKey&&phaseKey!==plan.lastScanPhase)engine.emit('info',phase+' · 검사 모사',{obs:c.item.id,dec:'예시 레시피 단계 전환',act:xray?'차폐문 닫힘·인터록 상태를 모사':'제품 검사 데이터 수집을 모사'});
   plan.lastScanPhase=phaseKey;
-  for(const m of [large,small]){m.sample.visible=scan&&m===chosen;m.trace.update(null);if(m.sample.visible){replaceProduct(m.sample,c.item.product);const motion=measurementMotion(c.item.product,stage.scanProgress,'feature',m.sample.position);m.sensor.position.copy(motion.position).add(new T.Vector3(0,.18,0));m.sensor.quaternion.setFromUnitVectors(new T.Vector3(0,0,1),motion.normal.clone().negate());m.trace.update(motion);plan.visuals.SCAN.motionText='ScanBox '+stage.box+' · '+(stage.welded?'용접품':'비용접품 · NDT 제외')+' · 다중 시점 '+(motion.index+1)+'/'+motion.count+' · '+motion.phase;}else m.sensor.position.set(0,2.5,0);m.rail.position.z=m.sensor.position.z;m.mast.position.set(m.sensor.position.x,(3.15+m.sensor.position.y)/2,m.sensor.position.z);m.mast.scale.y=Math.max(.1,3.15-m.sensor.position.y);m.lamp.material=m.sample.visible?blue:gold;}
+  for(const m of [large,small]){m.sample.visible=scan&&m===chosen;m.trace.update(null);let motion=null;if(m.sample.visible){replaceProduct(m.sample,c.item.product);motion=measurementMotion(c.item.product,stage.scanProgress,'feature',m.sample.position);m.trace.update(motion);plan.visuals.SCAN.motionText='ScanBox '+stage.box+' · '+(stage.welded?'용접품':'비용접품 · NDT 제외')+' · 다중 시점 '+(motion.index+1)+'/'+motion.count+' · '+motion.phase;}m.update(motion);}
   plan.visuals.SCAN.sample.visible=ut;xs.visible=xray;beam.visible=false;let xphase='대기 · 반입구 개방';door.position.y=3.3;if(xray){replaceProduct(xs,c.item.product);const q=(p-.65)/.19;xs.position.z=q<.2?1.3*(1-smooth(q/.2)):q>.85?1.3*smooth((q-.85)/.15):0;door.position.y=q<.3?3.3-1.35*smooth((q-.2)/.1):q>.8?1.95+1.35*smooth((q-.8)/.05):1.95;beam.visible=q>=.35&&q<.75;beam.position.z=beam.visible?-.6+1.2*(q-.35)/.4:0;xphase=q<.2?'검사 위치 이송':q<.35?'차폐문 닫힘 · 인터록 확인':q<.75?'정지 · 내부 투과 검사':q<.85?'조사 종료 · 개방':'반출';plan.visuals.SCAN.motionText='X-ray · '+xphase;}xl.element.textContent='인라인 X-ray · '+(busy&&!stage.welded?'비용접품 · 검사 제외':xphase);
   plan.scanStatus={box:stage.box,welded:stage.welded,scan,ut,xray};
   const cycle=Math.floor(t/60);if(t<(monitor.lastTime??0)){monitor.cycle=-1;monitor.ground=null;monitor.air=null;}monitor.lastTime=t;if(cycle>monitor.cycle&&t>5){monitor.cycle=cycle;const ground=['장애물 확인 요청','누유 의심 확인 요청','열 이상 확인 요청','출입·접근 확인 요청'][cycle%4],air=['적재 상태 확인 요청','AMR 이송 이상 확인 요청','상부 열 이상 확인 요청','사각지대 재촬영 요청'][cycle%4];monitor.ground={type:ground,x:plan.dog.position.x.toFixed(1),z:plan.dog.position.z.toFixed(1),time:t};monitor.air={type:air,x:plan.drone.position.x.toFixed(1),z:plan.drone.position.z.toFixed(1),time:t};for(const [name,event]of [['지상 순찰',monitor.ground],['상부 점검',monitor.air]])engine.emit('warn',name+' · '+event.type,{obs:'시나리오 이벤트 · 위치 ('+event.x+', '+event.z+')',dec:'위치 ('+event.x+', '+event.z+') · 통합 OCS 전달 (모사)',act:'현장 확인 요청 · 실제 센서 판정 아님'});}
