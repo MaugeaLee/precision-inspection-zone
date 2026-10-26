@@ -72,3 +72,10 @@ ZEISS 공식 8/6/3 제품 사진을 참고하여 흰색 본체·검은색 베이
 - Scanner geometry carries distinct 8160/5130 selection identities. Each identity targets its own world position instead of the shared SCAN/UT docking position.
 - Added dedicated scanner list buttons and pointer/keyboard-enabled labels. Shared SCAN selection frames the complete inspection row.
 - Browser verification: both list buttons update the camera and equipment heading; direct 8160 mesh click switches selection; label Enter activation works.
+
+## ScanBox reference-based exterior (2026-10-26)
+- Rebuilt 5130 with white front columns, dark modular side/rear panels, open top/front, control display, vents, light curtain and round table. Rebuilt 8160 with twin tall dark cabinets, elongated enclosure, twin linear rails and fixture table.
+- Reference envelope: 5130 4.30 x 4.25 x 3.05 m; 8160 5.75 x 10.15 x 3.90 m. Detailed geometry is interpretive, not manufacturer CAD. User-requested H2515 robots are retained instead of the different yellow arms in the reference photos; robot bases and tool poses remain concept animation.
+- Official visual references inspected: https://www.zeiss.com/metrology/en/systems/optical-3d/automated-solutions/scanbox/zeiss-scanbox-series-5.html and https://www.zeiss.com/metrology/en/systems/optical-3d/automated-solutions/scanbox/atos-scanbox-series-8.html
+- Dimensions: ZEISS ATOS 5 brochure https://asset-downloads.zeiss.com/catalogs/download/iqs/5cae8e6c-b6c5-48f6-8bbf-4bceeb15c0a3/zeiss_atos_5_brochure_en.pdf.pdf
+- Removed intersecting old scanner fences and control pedestal. Existing click identity/labels preserved; 60 scene recipe checks passed and both new exteriors inspected in browser.

@@ -109,7 +109,7 @@ function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재�
 function focusCell(id,equipment=null){
   if(!engine.cells[id])return;selected=id;selectedEquipment=planScene.scanBoxes?.[equipment]?equipment:null;planScene.focus=id;const c=engine.cells[id];
   cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-3.5),position:new THREE.Vector3(c.def.x+7.8,6.3,c.def.z+4)};
-  if(selectedEquipment){const at=planScene.scanBoxes[selectedEquipment].g.getWorldPosition(new THREE.Vector3());cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.5,0)),position:at.clone().add(new THREE.Vector3(6,6,9))};}else if(id==='SCAN'){cameraGoal={target:new THREE.Vector3(47,1,-14),position:new THREE.Vector3(62,19,13)};}
+  if(selectedEquipment){const at=planScene.scanBoxes[selectedEquipment].g.getWorldPosition(new THREE.Vector3());cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.5,0)),position:at.clone().add(selectedEquipment==='8160'?new THREE.Vector3(10,9,15):new THREE.Vector3(6,6,9))};}else if(id==='SCAN'){cameraGoal={target:new THREE.Vector3(47,1,-14),position:new THREE.Vector3(62,19,13)};}
   document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id&&(b.dataset.equipment||null)===selectedEquipment));updateFocus();
 }
 function updateFocus(){
@@ -200,4 +200,5 @@ function arrangeLabels(){
  });
  const occupied=[];labels.sort((a,b)=>a.priority-b.priority||a.distance-b.distance);for(const l of labels){const r={x:l.x-l.w/2,y:l.y-12,w:l.w,h:25};if(r.x<0||r.y<60||r.x+r.w>width||r.y+r.h>height-70)continue;if(occupied.some(b=>r.x<b.x+b.w&&r.x+r.w>b.x&&r.y<b.y+b.h&&r.y+r.h>b.y))continue;l.o.visible=true;occupied.push(r);}
 }
+
 
