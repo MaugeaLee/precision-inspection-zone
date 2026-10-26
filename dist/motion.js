@@ -13,7 +13,7 @@ let playing=true,progress=.25,last=performance.now();
 try{
  document.querySelector('header').insertAdjacentHTML('afterend',recipeControls);loadRecipe($('product').value);
  await loadShapes();
- const order=[['VIS',35,-24],['SCAN',51,-10],['OINS',44,-24],['MMZ',52,-24],['JUDGE',57,5]].map(([id,x,z])=>({id,def:{x,z},g:new T.Group(),state:'BUSY',progress,item:{id:'PREVIEW',product:'hood',recipe:readRecipe()}}));
+ const order=[['VIS',35,-24],['SCAN',51,-10],['OINS',45,-24],['MMZ',51,-24],['JUDGE',57,5]].map(([id,x,z])=>({id,def:{x,z},g:new T.Group(),state:'BUSY',progress,item:{id:'PREVIEW',product:'hood',recipe:readRecipe()}}));
  const engine={time:0,order,cells:Object.fromEntries(order.map(c=>[c.id,c])),records:[],emit(){},spawnPacket(){}};
  const plan=new PlanScene(engine,scene,()=>{});
  for(const c of order.filter(c=>plan.visuals[c.id].handler)){const g=KIT.makeCarrierAMR();g.position.set(0,0,2.5);plan.visuals[c.id].g.add(g);const pm=makeProduct(c.item.product);pm.position.y=.88;g.add(pm);c.occ={g,pm};}

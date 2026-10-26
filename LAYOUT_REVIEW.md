@@ -79,3 +79,10 @@ ZEISS 공식 8/6/3 제품 사진을 참고하여 흰색 본체·검은색 베이
 - Official visual references inspected: https://www.zeiss.com/metrology/en/systems/optical-3d/automated-solutions/scanbox/zeiss-scanbox-series-5.html and https://www.zeiss.com/metrology/en/systems/optical-3d/automated-solutions/scanbox/atos-scanbox-series-8.html
 - Dimensions: ZEISS ATOS 5 brochure https://asset-downloads.zeiss.com/catalogs/download/iqs/5cae8e6c-b6c5-48f6-8bbf-4bceeb15c0a3/zeiss_atos_5_brochure_en.pdf.pdf
 - Removed intersecting old scanner fences and control pedestal. Existing click identity/labels preserved; 60 scene recipe checks passed and both new exteriors inspected in browser.
+
+
+## 2026-10-26 참고 이미지 기반 구역 재배치
+
+공정 시나리오 v0.4 p.1/3/5/7의 장비 관계를 적용했다. 비전 중앙 지그와 양측 센서는 유지하고 툴 스테이션을 부스 좌측 안쪽, 제어반을 우측으로 이동했다. O-INSPECT와 MMZ G 사이 간격을 줄이고 중간 툴 교환 공간을 마련했다. ScanBox 두 반입구를 동일 선상에 두고 앞쪽 캐리어/레일을 추가했다. UT는 개방 작업대로 변경하고 협동로봇을 좌측, X-ray를 우측에 배치했다. 네 구역 바닥 경계와 배치별 카메라 버튼을 추가했다.
+
+치수 없는 참고 이미지이므로 장비 간격은 개념 배치다. 이미지의 공용 이송 로봇 1대 대신 기존 공정별 이송 로봇을 유지한다. 측면 이동 실험은 도달 범위 검증에서 실패하여 취소했다. 실제 적용 위치에서 이송 528 프레임의 최대 TCP 오차는 0.0053 scene units. 검사 조합 1344 프레임, 34건 연속 AMR 운행 완료, 최소 AMR 중심 간격 2.90 scene units. 이는 완전한 3D 충돌/안전 검증이 아니다.
