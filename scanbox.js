@@ -45,7 +45,7 @@ export function buildScanBox(root,x,z,id){
   if(big){box(g,.32,.14,d-1.5,side*(w/2-1),.15,0,steel);for(const dx of [-.15,.15])box(g,.035,.05,d-1.5,side*(w/2-1)+dx,.25,0,edge);}
   robots.push({base,rig,sensor,side});
  }
- const trace=makeInspectionTrace(g,0x64caff);label(g,'ATOS ScanBox '+id+(big?' · 대형 후드/도어':' · 중소형 검사물'),h+.65);
+ const trace=makeInspectionTrace(g,0x64caff);label(g,'ATOS ScanBox '+id+(big?' · BIW/차체/대형 패널':' · 도어/후드/중소형 패널'),h+.65);
  const update=motion=>{
   const key=motion?[...motion.position.toArray(),...motion.point.toArray()].map(n=>n.toFixed(4)).join(','):'idle';if(g.userData.lastPose===key)return;g.userData.lastPose=key;
   for(const r of robots){

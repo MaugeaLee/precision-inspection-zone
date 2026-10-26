@@ -486,9 +486,9 @@ export class InspZone {
     const res = !it.rechecked && r < S.judge.uncertain ? 'unc' : r < S.judge.uncertain + S.judge.ng * (this.sim.serials?.ngFactor(zk) ?? 1) ? 'ng' : 'ok';   // 공정 보정 중인 Zone은 NG 확률이 낮다 (js/serial.js)
     const by = (s.by[it.product] ??= { ok: 0, unc: 0, ng: 0 });
     if (res === 'unc') {
-      s.unc++; by.unc++; it.rechecked = true; it.redo = true; it.done.delete(measurementCell(it.product));
+      s.unc++; by.unc++; it.rechecked = true; it.redo = true; it.done.delete(it.redoCell||measurementCell(it.product));
       this.push(it, 'unc'); cell.flash = { col: 0xf5b82e, t: 2 };
-      this.sim.log('warn', `정밀검사 판정 불확실 — ${zl(zk)} ${plabel} ${it.id}`, { obs: 'AI 판정 신뢰도 기준 미달', dec: `Quality & Recovery Agent: ${measurementCell(it.product)==='MMZ'?'MMZ G':'O-INSPECT'} 재측정 후 재판정`, act: `${c.id} → ${measurementCell(it.product)}` });
+      this.sim.log('warn', `정밀검사 판정 불확실 — ${zl(zk)} ${plabel} ${it.id}`, { obs: 'AI 판정 신뢰도 기준 미달', dec: `Quality & Recovery Agent: ${it.redoCell||measurementCell(it.product)} 재측정 후 재판정`, act: `${c.id} → ${it.redoCell||measurementCell(it.product)}` });
       return;
     }
     s.done++; s[res]++; by[res]++; this.push(it, res);
@@ -496,7 +496,7 @@ export class InspZone {
     cell.flash = { col: res === 'ok' ? 0x3ddc84 : 0xff4d4d, t: 2 };
     const sh = cell.parts.shelves[res === 'ok' ? 'ok' : 'ng'], n = res === 'ok' ? s.ok : s.ng; sh.forEach((b, i) => (b.visible = i < Math.min(6, n)));
     if (res === 'ng' && this.mode !== 'traditional') this.spawnPacket(cell.sensor.getWorldPosition(new THREE.Vector3()), 0xff4d4d);   // NG 판정 → 서버 (QMS 저장 · 오케스트레이터 알림)
-    if (res === 'ng') this.sim.log('warn', `정밀검사 NG — ${zl(zk)} ${plabel} ${it.id}`, { obs: `검사 경로 ${S.routes[it.product].map((id) => S.cells[id].label).join(' → ')}${it.rechecked ? ' → '+(measurementCell(it.product)==='MMZ'?'MMZ G':'O-INSPECT')+' 재측정' : ''}`, dec: 'Quality & Recovery Agent 최종 NG · QMS 저장', act: `${it.serial ? `${it.serial} · ` : ''}${zl(zk)} 로트 봉쇄(출하 보류) · 처분 판정(재작업·폐기) · 선행공정 보정 · 샘플링 강화` });
+    if (res === 'ng') this.sim.log('warn', `정밀검사 NG — ${zl(zk)} ${plabel} ${it.id}`, { obs: `검사 경로 ${S.routes[it.product].map((id) => S.cells[id].label).join(' → ')}${it.rechecked ? ' → '+(it.redoCell||measurementCell(it.product))+' 재측정' : ''}`, dec: 'Quality & Recovery Agent 최종 NG · QMS 저장', act: `${it.serial ? `${it.serial} · ` : ''}${zl(zk)} 로트 봉쇄(출하 보류) · 처분 판정(재작업·폐기) · 선행공정 보정 · 샘플링 강화` });
     this.detach(c); c.item = null;
   }
   push(it, res) { this.recent.unshift({ id: it.id, zone: it.zone, product: it.product, res, t: this.time }); this.recent.length = Math.min(this.recent.length, 6); }

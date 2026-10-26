@@ -1,4 +1,5 @@
-import {scanRecipeLabel,scanBoxFor,requiresNDT} from './product-policy.js';
+import {EXCEPTIONS} from './process-v04.js';
+import {scanRecipeLabel,scanBoxFor,requiresNDT,recipeFor,routeFor} from './product-policy.js';
 import {restorePayload} from './transfer.js';
 import {TrafficReservations,MOVING,corridorPath} from './traffic.js';
 import {makeProduct} from './shapes.js';
@@ -26,7 +27,7 @@ export class InspectionSession extends InspZone {
     this.events=[];this.records=[];this.trace=[];
     for(const c of Object.values(this.equipment))Object.assign(c,{state:'IDLE',remaining:0,busy:false});
     mode='dark';this.sim.mode.key=mode;super.setup(this.sim,null,true);this.wallG.visible=false;
-    this.traffic=new TrafficReservations();this.sourceTimer=0;this.autoIndex=0;this.sim.extMovers=this.carriers.map(c=>this.tele(c));
+    for(const c of this.order)c.processHold=null;this.traffic=new TrafficReservations();this.sourceTimer=0;this.autoIndex=0;this.sim.extMovers=this.carriers.map(c=>this.tele(c));
     this.emit('info','정밀검사존 준비 완료',{obs:'5개 사업계획 셀 · 검사 AMR 3대',dec:'피지컬AI 시연 모드',act:'샘플 반입 요청 대기'});
   }
   onEvent(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
@@ -36,15 +37,19 @@ export class InspectionSession extends InspZone {
     this.events?.unshift(event);if(this.events?.length>200)this.events.length=200;
     this.listeners?.forEach(fn=>fn(event));
   }
-  enqueue(product,scenario='ok'){
+  enqueue(product,scenario='ok',recipe=null){
     if(!PRODUCTS[product])throw new Error('알 수 없는 제품');
     if(this.queue.length>=12)return false;
     const zone=PRODUCTS[product][0],id=`QS-${String(++this.seq).padStart(4,'0')}`;
-    const req={id,serial:`DEMO-${product.toUpperCase()}-${String(this.seq).padStart(4,'0')}`,zone,product,scenario,t0:this.time,stageTrace:[]};
+    const req={id,serial:`DEMO-${product.toUpperCase()}-${String(this.seq).padStart(4,'0')}`,zone,product,scenario,recipe:recipeFor(product,recipe),t0:this.time,stageTrace:[]};
     this.queue.push(req);this.stats.samples++;
-    this.emit('info','샘플 접수 요청 · '+id,{obs:INSP.zones[zone]+' / '+PRODUCTS[product][1],dec:'검사 레시피: '+ROUTES[product].map(k=>k==='SCAN'?scanRecipeLabel(product):CELL_SHORT[k]).join(' → '),act:'검사 AMR 배차 대기'});
+    this.emit('info','샘플 접수 요청 · '+id,{obs:INSP.zones[zone]+' / '+PRODUCTS[product][1],dec:'검사 레시피: '+routeFor(product,req.recipe).map(k=>k==='SCAN'?scanRecipeLabel(product,req.recipe):CELL_SHORT[k]).join(' → '),act:'검사 AMR 배차 대기'});
     return true;
   }
+  nextOf(c){const it=c.item;if(!it)return null;if(it.redo)return it.redoCell||'VIS';return routeFor(it.product,it.recipe).find(id=>!it.done.has(id))||'JUDGE';}
+  holdProcess(id,kind){const c=this.cells[id];if(!c?.item||c.state!=='BUSY'||!EXCEPTIONS[kind]||c.processHold)return false;if(['acquisition','registration','alignment','uncertain','ng'].includes(kind)&&(c.progress<.2||c.progress>=.84))return false;if(kind==='interlock'&&(id!=='SCAN'||!['xray','both'].includes(c.item.recipe.ndt)))return false;
+    c.processHold={kind,progress:c.progress};this.ctl.hold.add(id);(c.item.processEvents??=[]).push({time:this.time,cell:id,kind,action:'hold'});this.emit('warn',EXCEPTIONS[kind][0]+' · '+c.item.id,{obs:CELL_SHORT[id],dec:'진행 보류 · 제품 상태 유지',act:EXCEPTIONS[kind][1]});return true;}
+  resumeProcess(id){const c=this.cells[id],h=c?.processHold;if(!h)return false;const retry=['acquisition','registration','alignment','uncertain','ng'].includes(h.kind);if(retry&&c.progress>=.2&&c.progress<.84)c.progress=.20;this.ctl.hold.delete(id);c.processHold=null;(c.item.processEvents??=[]).push({time:this.time,cell:id,kind:h.kind,action:retry?'reinspect':'resume'});this.emit('info','조치·재개 조건 확인 · '+c.item.id,{obs:EXCEPTIONS[h.kind][1],act:retry?'영향 항목 재검사 (모사)':'보류 단계부터 재개 (모사)'});return true;}
   attach(c){const m=makeProduct(c.item.product);m.position.set(0,KIT.BELT_Y-.02,0);c.g.add(m);c.pm=m;}
   detach(c){if(c.pm){c.pm.removeFromParent();c.pm=null;}}
   sampleTick(){} // Production throughput is outside this independent Zone.
@@ -96,12 +101,12 @@ export class InspectionSession extends InspZone {
     for(const c of this.carriers){
       if(c.state==='work'&&c.item&&c.item.stageTrace?.at(-1)?.cell!==c.at){
         const entry={cell:c.at,time:this.time};c.item.stageTrace.push(entry);this.trace.push({sample:c.item.id,product:c.item.product,...entry});
-        this.emit('info',CELL_SHORT[c.at]+' 시작 · '+c.item.id,{obs:PRODUCTS[c.item.product][1],act:c.at==='JUDGE'?'검사 누락·데이터 유효성 확인 후 판정':c.at==='SCAN'?scanRecipeLabel(c.item.product):this.cells[c.at].def.use});
+        this.emit('info',CELL_SHORT[c.at]+' 시작 · '+c.item.id,{obs:PRODUCTS[c.item.product][1],act:c.at==='JUDGE'?'검사 누락·데이터 유효성 확인 후 판정':c.at==='SCAN'?scanRecipeLabel(c.item.product,c.item.recipe):this.cells[c.at].def.use});
       }
     }
   }
   judge(c,cell){
-    const it=c.item,original=this.rng;
+    const it=c.item,original=this.rng;it.redoCell=it.stageTrace.filter(s=>!['DOCK','JUDGE'].includes(s.cell)).at(-1)?.cell||'VIS';
     if(it.scenario==='ok')this.rng=()=>.95;
     else if(it.scenario==='ng')this.rng=()=>.08;
     else if(it.scenario==='uncertain')this.rng=()=>it.rechecked ? .95 : .01;
@@ -109,7 +114,7 @@ export class InspectionSession extends InspZone {
   }
   push(it,res){
     super.push(it,res);
-    this.records.push({sample_id:it.id,product_id:it.serial,product:PRODUCTS[it.product][1],source_zone:INSP.zones[it.zone],time_seconds:Math.round(this.time),result:RESULT[res],remeasured:!!it.rechecked,route:it.stageTrace.map(s=>s.cell).join(' → '),scenario:it.scenario,source:'simulation',scanbox:ROUTES[it.product].includes('SCAN')?scanBoxFor(it.product):null,ndt:ROUTES[it.product].includes('SCAN')&&requiresNDT(it.product)});
+    this.records.push({sample_id:it.id,product_id:it.serial,product:PRODUCTS[it.product][1],source_zone:INSP.zones[it.zone],time_seconds:Math.round(this.time),result:RESULT[res],remeasured:!!it.rechecked,route:it.stageTrace.map(s=>s.cell).join(' → '),scenario:it.scenario,source:'simulation',recipe:it.recipe,process_events:it.processEvents||[],scanbox:scanBoxFor(it.product,it.recipe),ndt:requiresNDT(it.product,it.recipe)});
     if(res==='ok')this.emit('info','OK 판정 · '+it.id,{obs:'필수 검사 완료 · 시나리오 기준 충족',dec:'Quality & Recovery Agent · 정상 반출',act:'QMS 품질이력 기록 · AMR 복귀'});
   }
   injectFault(id='VIS'){
