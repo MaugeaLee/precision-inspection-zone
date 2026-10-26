@@ -33,17 +33,21 @@ function pose(r,target,model,t){
 
 // Enclosed inspection workspaces; transparent panels expose the demonstration.
 function booth(g,title){
+ // Expand the shell only: keep the loading datum and robot/fixture coordinates fixed.
+ const half=4.2,back=-4.9,front=1.5,height=3.8,depth=front-back,center=(front+back)/2;
+ const shell=new T.Group();shell.name='expanded-vision-booth';shell.position.x=.25;g.add(shell);
+ shell.userData.envelope={width:half*2,depth,height,back,front};
  const glass=new T.MeshStandardMaterial({color:0x9ed8e2,transparent:true,opacity:.16,depthWrite:false,roughness:.25,side:T.DoubleSide});
- for(const x of [-3.25,3.25])for(const z of [-3.4,1.5])box(g,.14,3.4,.14,x,1.7,z,dark);
- for(const z of [-3.4,1.5])box(g,6.6,.18,.18,0,3.35,z,dark);
- for(const x of [-3.25,3.25]){box(g,.18,.18,5,x,3.35,-.95,dark);box(g,.06,2.9,4.8,x,1.5,-.95,glass);box(g,.1,.45,4.8,x,.25,-.95,white);}
- box(g,6.4,2.9,.06,0,1.5,-3.4,glass);box(g,6.5,.45,.1,0,.25,-3.4,white);
- // Central front opening for loading; side guards keep the handling robot inside.
- for(const x of [-2.9,2.9])box(g,.6,2.9,.06,x,1.5,1.5,glass);
- box(g,2.8,.08,.1,0,3.1,1.5,blue);
- for(const x of [-1.65,1.65])box(g,.09,.07,3.4,x,3.2,-1.45,new T.MeshBasicMaterial({color:0xc2f7ff}));
- box(g,.4,.65,.12,3.55,1.15,1.5,blue);label(g,title,0,3.8,-1.45);
+ for(const x of [-half,half])for(const z of [back,front])box(shell,.14,height,.14,x,height/2,z,dark);
+ for(const z of [back,front])box(shell,half*2+.1,.18,.18,0,height-.05,z,dark);
+ for(const x of [-half,half]){box(shell,.18,.18,depth+.1,x,height-.05,center,dark);box(shell,.06,height-.5,depth-.2,x,(height-.5)/2,center,glass);box(shell,.1,.45,depth-.2,x,.25,center,white);}
+ box(shell,half*2-.1,height-.5,.06,0,(height-.5)/2,back,glass);box(shell,half*2,.45,.1,0,.25,back,white);
+ for(const x of [-half+.4,half-.4])box(shell,.7,height-.5,.06,x,(height-.5)/2,front,glass);
+ box(shell,3.5,.08,.1,0,height-.3,front,blue);
+ for(const x of [-2.2,2.2])box(shell,.09,.07,depth-.8,x,height-.2,center,new T.MeshBasicMaterial({color:0xc2f7ff}));
+ box(shell,.4,.65,.12,half+.3,1.15,front,blue);label(shell,title,0,height+.4,center);
 }
+
 function route(g,points,color){const vectors=points.map(p=>new T.Vector3(...p));const curve=new T.CurvePath();for(let i=0;i<vectors.length;i++)curve.add(new T.LineCurve3(vectors[i],vectors[(i+1)%vectors.length]));const line=new T.Line(new T.BufferGeometry().setFromPoints([...vectors,vectors[0]]),new T.LineDashedMaterial({color,dashSize:.5,gapSize:.35,transparent:true,opacity:.55}));line.computeLineDistances();g.add(line);return curve;}
 function patrol(object,path,t,speed){const u=(t*speed/path.getLength())%1;object.position.copy(path.getPointAt(u));const d=path.getTangentAt(u);object.rotation.y=Math.atan2(-d.z,d.x);}
 
