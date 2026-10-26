@@ -39,7 +39,7 @@ export function buildPDFCells(root,engine,plan){
  const console=plan.visuals.JUDGE.g;for(const x of [-2.2,-1.1,1.1,2.2])rack(console,x,3);for(const x of [-1.7,0,1.7]){box(console,1.5,.1,.7,x,1.1,-.5,white);box(console,1.1,.6,.08,x,1.55,-.8,blue);}const dashboard=text(console,'QMS · 데이터 허브 · AI 분석',0,4.6,-3.7);
  text(console,'Process Simulation · Opcenter · Amesim',0,.3,4);text(console,'Testlab · Heeds · Insight Hub · 역설계',0,.3,4.5);
  // Separate control pedestals and protective fencing, following the PDF views.
- for(const [x,z]of [[47.6,-14.5],[61.5,-12.3],[39.3,-27],[42.8,-28.5]]){const g=group(root,x,z);box(g,.7,1.1,.6,0,.55,0,white);box(g,.5,.35,.05,0,1.25,.27,blue);}
+ for(const [x,z]of [[47.6,-14.5],[61.5,-12.3],[40.1,-27],[42.8,-28.5]]){const g=group(root,x,z);box(g,.7,1.1,.6,0,.55,0,white);box(g,.5,.35,.05,0,1.25,.27,blue);}
  for(const [x,z,w]of []){const g=group(root,x,z);for(const dx of [-w/2,w/2]){box(g,.09,1.2,.09,dx,.6,0,gold);box(g,w/2-1.3,.8,.04,dx/2,.65,0,new T.MeshStandardMaterial({color:0x596e74,transparent:true,opacity:.28,wireframe:true}));}}
  buildReferenceLayout(root,plan);
  // Cell 3: charging cabinet and local status terminal. Cell 4: warehouse racks and dock.
@@ -72,7 +72,7 @@ export function buildPDFCells(root,engine,plan){
 function buildReferenceLayout(root,plan){
  const pale=material(0x91a3ad),stripe=material(0xe7bb55),mint=material(0x51cbb6);
  const area=(name,x,z,w,d,color)=>{const g=group(root,x,z);box(g,w,.02,d,0,.055,0,material(color));for(const dx of [-w/2,w/2])box(g,.045,.015,d,dx,.075,0,pale);for(const dz of [-d/2,d/2])box(g,w,.015,.045,0,.075,dz,pale);const l=text(g,name,0,.16,-d/2+.4);l.element.classList.add('subzone-label');return g;};
- area('비전검사 · 중앙 지그 / 양측 센서',35,-27,8,8,0x204d50);
+ area('비전검사 · 중앙 지그 / 양측 센서',35,-27.6,9,8.8,0x204d50);
  area('정밀측정 · O-INSPECT / MMZ G',48,-27,17,8,0x2b444e);
  area('3D 스캔 · 대형 / 중소형 부스',38.2,-14.2,15.2,11.6,0x263e50);
  area('비파괴검사 · UT / X-ray',55.2,-13.7,18.2,10.8,0x36434b);
