@@ -4,7 +4,7 @@ import {EXCEPTIONS} from './process-v04.js';
 import {scanRecipeLabel} from './product-policy.js';
 import {corridorPath} from './traffic.js';
 import {floorMaterial,contactShadows} from './render-quality.js';
-import {PDF_CELLS} from './pdf-cells.js';
+import {PDF_CELLS,INSPECTION_AREAS} from './pdf-cells.js';
 import {loadShapes} from './shapes.js';
 import {PLAN,PlanScene} from './plan.js';
 import * as THREE from 'three';
@@ -76,6 +76,7 @@ function makeCellList(){
   $('cell-list').innerHTML=PLAN.map(p=>`<button class="cell-row" data-plan="${p.id}"><span class="cell-number">${p.id.slice(-1)}</span><span><strong>${p.short}</strong><small>검사 · 모니터링</small><span id="plan-state-${p.id}" class="state">대기</span></span></button>`).join('')+`<div class="station-links">${engine.order.map(c=>`<button data-cell="${c.id}">${c.id==='DOCK'?'공용 반입':names[c.id]}</button>`).join('')}</div>`;
   document.querySelectorAll('[data-plan]').forEach(b=>b.onclick=()=>focusPlan(b.dataset.plan));
   const links=$('cell-list').querySelector('.station-links');for(const id of ['8160','5130']){const b=document.createElement('button');b.dataset.cell='SCAN';b.dataset.equipment=id;b.textContent='ScanBox '+id;links.append(b);}
+  const legend=document.createElement('div');legend.className='inspection-legend';legend.innerHTML='<strong>검사 장비별 구역</strong><small>표면·피처는 같은 부스의 센서 영역</small>';for(const z of INSPECTION_AREAS){const b=document.createElement('button');b.textContent=z.name;b.style.borderLeft='5px solid #'+z.color.toString(16).padStart(6,'0');b.onclick=()=>focusCell(z.cell);legend.append(b);}$('cell-list').prepend(legend);
   document.querySelectorAll('[data-cell]').forEach(b=>b.onclick=()=>focusCell(b.dataset.cell,b.dataset.equipment));
   for(const [caption,id,x,z,d] of [['비전검사 배치','A-4-1',35,-27,14],['정밀측정 배치','A-4-1',48,-27,20],['3D 스캔 배치','A-4-2',38,-14,22],['비파괴검사 배치','A-4-2',55,-13,21]]){const b=document.createElement('button');b.textContent=caption;links.append(b);b.onclick=()=>{focusPlan(id);layoutView=true;cameraGoal={target:new THREE.Vector3(x,.8,z),position:new THREE.Vector3(x+d*.35,d*.7,z+d)};$('focus-card').hidden=true;};}
 }
@@ -203,11 +204,11 @@ function showOCS(){
 function sunQuality(high){scene.traverse(o=>{if(o.isDirectionalLight&&o.castShadow){const size=high?4096:2048;o.shadow.mapSize.set(size,size);if(o.shadow.map){o.shadow.map.dispose();o.shadow.map=null;}o.shadow.needsUpdate=true;}});}
 function arrangeLabels(){
  const width=viewport.clientWidth,height=viewport.clientHeight,labels=[];
- scene.traverse(o=>{if(!o.isCSS2DObject||!o.element.classList.contains('equipment-label'))return;const isPlan=o.element.classList.contains('plan-label'),text=o.element.textContent;
+ scene.traverse(o=>{if(!o.isCSS2DObject||!o.element.classList.contains('equipment-label'))return;const isPlan=o.element.classList.contains('plan-label'),isZone=o.element.classList.contains('inspection-zone-label'),text=o.element.textContent;
   const p=o.getWorldPosition(new THREE.Vector3()),distance=p.distanceTo(controls.target);
-  let eligible=showLabels&&(selected?distance<Math.max(12,PLAN.find(x=>x.id===selected)?.w??12):isPlan||['유연생산','정밀조립','적응가공','물류·창고'].includes(text)||text==='4족 로봇 · 공장 순찰'||text==='드론 · 공장 상공 점검');
+  let eligible=showLabels&&(selected?distance<Math.max(12,PLAN.find(x=>x.id===selected)?.w??12):isZone||isPlan||['유연생산','정밀조립','적응가공','물류·창고'].includes(text)||text==='4족 로봇 · 공장 순찰'||text==='드론 · 공장 상공 점검');
   if(/두산|현대/.test(text))eligible=eligible&&!!selected;
-  o.visible=false;if(!eligible)return;p.project(camera);if(p.z>1||p.z< -1)return;labels.push({o,x:(p.x+1)*width/2,y:(1-p.y)*height/2,w:Math.min(230,text.length*5.7+20),priority:isPlan?0:/ScanBox|X-ray|부스|ZEISS/.test(text)?1:2,distance});
+  o.visible=false;if(!eligible)return;p.project(camera);if(p.z>1||p.z< -1)return;labels.push({o,x:(p.x+1)*width/2,y:(1-p.y)*height/2,w:Math.min(230,text.length*5.7+20),priority:isZone?-1:isPlan?0:/ScanBox|X-ray|부스|ZEISS/.test(text)?1:2,distance});
  });
  const occupied=[];labels.sort((a,b)=>a.priority-b.priority||a.distance-b.distance);for(const l of labels){const r={x:l.x-l.w/2,y:l.y-12,w:l.w,h:25};if(r.x<0||r.y<60||r.x+r.w>width||r.y+r.h>height-70)continue;if(occupied.some(b=>r.x<b.x+b.w&&r.x+r.w>b.x&&r.y<b.y+b.h&&r.y+r.h>b.y))continue;l.o.visible=true;occupied.push(r);}
 }

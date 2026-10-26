@@ -72,10 +72,11 @@ export function buildPDFCells(root,engine,plan){
 function buildReferenceLayout(root,plan){
  const pale=material(0x91a3ad),stripe=material(0xe7bb55),mint=material(0x51cbb6);
  const area=(name,x,z,w,d,color)=>{const g=group(root,x,z);box(g,w,.02,d,0,.055,0,material(color));for(const dx of [-w/2,w/2])box(g,.045,.015,d,dx,.075,0,pale);for(const dz of [-d/2,d/2])box(g,w,.015,.045,0,.075,dz,pale);const l=text(g,name,0,.16,-d/2+.4);l.element.classList.add('subzone-label');return g;};
- area('비전검사 · 중앙 지그 / 양측 센서',35,-27.6,9,8.8,0x204d50);
- area('정밀측정 · O-INSPECT / MMZ G',48,-27,17,8,0x2b444e);
- area('3D 스캔 · 대형 / 중소형 부스',38.2,-14.2,15.2,11.6,0x263e50);
- area('비파괴검사 · UT / X-ray',55.2,-13.7,18.2,10.8,0x36434b);
+ for(const zone of INSPECTION_AREAS){
+  const {name,x,z,w,d,color,cell}=zone,g=area(name,x,z,w,d,color);g.userData.zoneCell={zone:'insp',cellId:cell};
+  const l=g.children.find(o=>o.isCSS2DObject);l.position.set(0,.2,name.startsWith('피처')?-d/2+.65:d/2-.55);l.element.textContent=name.split(' · ')[0];l.element.classList.add('inspection-zone-label');l.element.style.borderColor='#'+color.toString(16).padStart(6,'0');
+  l.element.setAttribute('role','button');l.element.setAttribute('tabindex','0');l.element.setAttribute('aria-label',name+' 구역 보기');l.element.onclick=e=>{e.stopPropagation();plan.onEquipmentFocus?.(cell);};l.element.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();l.element.click();}};
+ }
  const fixture=(x,z)=>{const g=group(root,x,z);box(g,1.5,.18,1.25,0,.17,0,gray);for(const dx of [-.55,.55])for(const dz of [-.45,.45]){box(g,.09,.25,.09,dx,.34,dz,metal);box(g,.14,.06,.14,dx,.49,dz,black);}return g;};
  const tools=(x,z)=>{const g=group(root,x,z);box(g,1.6,.08,.65,0,.85,0,metal);for(const dx of [-.65,.65])box(g,.08,.8,.5,dx,.4,0,gray);for(const dx of [-.5,0,.5]){box(g,.18,.15,.2,dx,.98,0,black);box(g,.05,.15,.05,dx,1.13,0,metal);}text(g,'교환 툴 스테이션',0,1.5,0);};
  // Reference images place auxiliary tools between paired stations, outside their loading apertures.
@@ -89,3 +90,13 @@ function buildReferenceLayout(root,plan){
  const c=plan.visuals.VIS.g;for(const x of [-.7,.7])for(const z of [-2.05,-.95]){box(c,.075,.3,.075,x,1,z,metal);box(c,.16,.08,.16,x,1.17,z,black);}
  text(root,'반입·회수 통로',45,.11,-21);text(root,'반입·회수 통로',47,.11,-7);
 }
+
+export const INSPECTION_AREAS=[
+ {name:'표면검사 · ABIS III',cell:'VIS',x:32.9,z:-27.6,w:4.2,d:8.8,color:0x216f69},
+ {name:'피처검사 · AIMAX',cell:'VIS',x:37.2,z:-27.6,w:4.2,d:8.8,color:0x285e92},
+ {name:'복합 정밀측정 · O-INSPECT',cell:'OINS',x:44.3,z:-27,w:7,d:8,color:0x55538a},
+ {name:'대형 정밀측정 · MMZ G',cell:'MMZ',x:52.3,z:-27,w:8.8,d:8,color:0x655381},
+ {name:'3D 검사 · ScanBox',cell:'SCAN',x:38.2,z:-14.2,w:15.2,d:11.6,color:0x256782},
+ {name:'초음파 검사 · UT',cell:'SCAN',x:50.7,z:-13.7,w:8.8,d:10.8,color:0x86652d},
+ {name:'X-ray 검사',cell:'SCAN',x:59.7,z:-13.7,w:8.8,d:10.8,color:0x814d54}
+];
