@@ -202,8 +202,8 @@ export const INSP_CELLS = {
   DOCK: { no: '0', type: 'dock', label: '시료 접수·도킹', use: 'AMR 도킹 · 제품 ID·공정이력 확인 · 검사 레시피 Task 생성', x: 57, z: -34, cycle: 8 },
   VIS: { no: '1', type: 'vision', label: '로봇형 비전 검사 Cell', use: 'ZEISS ABIS III 표면비전 · ZEISS AIMAX 피처비전 · 두산 H2515', x: 35, z: -24, cycle: 40, robots: 0 },
   SCAN: { no: '2', type: 'scan', label: '3D·UT·X-ray 복합검사 Cell', use: 'ScanBox 8160/5130 · UT/NDT · 인라인 X-ray (예시 레시피)', x: 51, z: -10, cycle: 90, robots: 0 },
-  OINS: { no: '3', type: 'oins', label: 'O-INSPECT 소형 정밀측정', use: '대형 후드·도어 제외 · O-INSPECT 8/6/3 · HDR50-22 + 개폐 그리퍼 · 접촉·광학 측정', x: 44, z: -24, cycle: 110, robots: 0 },
-  MMZ: { no: '4', type: 'atos', label: 'ZEISS MMZ G 문형 3차원 측정', use: '대형 후드·도어 전용 · 문형 CMM 정밀측정 · HDR50-22 + 흡착 그리퍼', x: 52, z: -24, cycle: 60, robots: 0 },
+  OINS: { no: '3', type: 'oins', label: 'O-INSPECT 소형 정밀측정', use: '대형 후드·도어 제외 · O-INSPECT 8/6/3 · HDR50-22 + 개폐 그리퍼 · 접촉·광학 측정', x: 45, z: -24, cycle: 110, robots: 0 },
+  MMZ: { no: '4', type: 'atos', label: 'ZEISS MMZ G 문형 3차원 측정', use: '대형 후드·도어 전용 · 문형 CMM 정밀측정 · HDR50-22 + 흡착 그리퍼', x: 51, z: -24, cycle: 60, robots: 0 },
   JUDGE: { no: '5', type: 'judge', label: 'AI 판정·결과 버퍼', use: 'OK · 판정 불확실 · NG → QMS 저장 · 선행공정 환류', x: 57, z: 5, cycle: 10 },
 };
 // 시설 코드용 Zone 보기 (드론 순찰 경로 · Zone 영역 · 이름) — 확장 Zone(EXTRA_ZONES)과 같은 꼴 (원점 기준 로컬 좌표)

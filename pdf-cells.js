@@ -22,15 +22,15 @@ function darkMaterial(){return new T.MeshStandardMaterial({color:0x24313f});}
 function group(root,x,z){const g=new T.Group();g.position.set(x,0,z);root.add(g);return g;}
 function rack(g,x,z){box(g,.65,1.8,.65,x,.9,z,black);for(let y=.25;y<1.7;y+=.23){box(g,.55,.13,.04,x,y,z+.34,gray);box(g,.06,.04,.02,x+.2,y,z+.37,blue);}}
 export function buildPDFCells(root,engine,plan){
- const large=buildScanBox(root,34,-14,'8160');const small=buildScanBox(root,42,-14,'5130');
+ const large=buildScanBox(root,34.5,-14,'8160');const small=buildScanBox(root,42,-11.05,'5130');
  plan.scanBoxes={};
  for(const [id,station,name]of [['8160',large,'ATOS ScanBox 8160'],['5130',small,'ATOS ScanBox 5130']]){
   station.g.userData.zoneCell={zone:'insp',cellId:'SCAN',equipment:id};plan.scanBoxes[id]={g:station.g,name};
   station.g.traverse(o=>{if(!o.isCSS2DObject||!o.element.textContent.includes('ScanBox'))return;const el=o.element;el.classList.add('equipment-select');el.setAttribute('role','button');el.setAttribute('tabindex','0');el.setAttribute('aria-label',name+' 선택');el.onclick=e=>{e.stopPropagation();plan.onEquipmentFocus?.('SCAN',id);};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}};});
  }
- const xr=group(root,60,-14);xr.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(xr,5,.3,3.8,0,.15,0,gray);box(xr,5,2.8,.2,0,1.7,-1.7);for(const x of [-2.4,2.4])box(xr,.2,2.8,3.4,x,1.7,0);box(xr,5,.2,3.8,0,3.2,0);box(xr,4,.8,1.8,0,.7,.9,black);const door=box(xr,3.7,2.3,.15,0,1.95,1.72,gray);const xs=new T.Group();xs.position.set(0,1.15,.5);xr.add(xs);const xl=text(xr,'인라인 X-ray · 대기',0,3.7,0);box(xr,.4,.5,.15,2.7,1.4,1.5,blue);text(xr,'차폐 · 안전 인터록 (모사)',0,.2,2.3);const source=box(xr,.35,.45,.35,-1.8,1.7,0,blue),detector=box(xr,.1,1.2,1.2,1.8,1.7,0,darkMaterial());const beam=box(xr,3.4,.025,.5,0,1.7,0,new T.MeshBasicMaterial({color:0xf1ba5b,transparent:true,opacity:.18,depthWrite:false}));beam.visible=false;
+ const xr=group(root,58,-14);xr.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(xr,5,.3,3.8,0,.15,0,gray);box(xr,5,2.8,.2,0,1.7,-1.7);for(const x of [-2.4,2.4])box(xr,.2,2.8,3.4,x,1.7,0);box(xr,5,.2,3.8,0,3.2,0);box(xr,4,.8,1.8,0,.7,.9,black);const door=box(xr,3.7,2.3,.15,0,1.95,1.72,gray);const xs=new T.Group();xs.position.set(0,1.15,.5);xr.add(xs);const xl=text(xr,'인라인 X-ray · 대기',0,3.7,0);box(xr,.4,.5,.15,2.7,1.4,1.5,blue);text(xr,'차폐 · 안전 인터록 (모사)',0,.2,2.3);const source=box(xr,.35,.45,.35,-1.8,1.7,0,blue),detector=box(xr,.1,1.2,1.2,1.8,1.7,0,darkMaterial());const beam=box(xr,3.4,.025,.5,0,1.7,0,new T.MeshBasicMaterial({color:0xf1ba5b,transparent:true,opacity:.18,depthWrite:false}));beam.visible=false;
  // Cell 1 tooling and data acquisition, not an extra production station.
- const tooling=group(root,39.5,-28);box(tooling,1.2,.75,.8,0,.4,0,gray);for(const x of [-.4,0,.4])box(tooling,.17,.25,.3,x,.9,0,black);text(tooling,'그리퍼 · 툴체인저',0,1.3,0);rack(root,56,-29);
+ const tooling=group(root,32.65,-26);box(tooling,1.2,.75,.8,0,.4,0,gray);for(const x of [-.4,0,.4])box(tooling,.17,.25,.3,x,.9,0,black);text(tooling,'그리퍼 · 툴체인저',0,1.3,0);rack(root,55.7,-29.5);
  const dg=group(root,34,3);box(dg,2.5,.12,2,0,.06,0,gray);box(dg,.25,1.1,2,-1.1,.6,0,white);text(dg,'4족 로봇 도킹 · 충전',0,1.6,0);
  const dd=group(root,44,3);box(dd,2.4,.3,2.4,0,.15,0,gray);box(dd,1.8,.08,1.8,0,.35,0,blue);text(dd,'드론 도킹 · 충전',0,1.1,0);
  // Sensor modules on the representative mobile robots.
@@ -39,8 +39,9 @@ export function buildPDFCells(root,engine,plan){
  const console=plan.visuals.JUDGE.g;for(const x of [-2.2,-1.1,1.1,2.2])rack(console,x,3);for(const x of [-1.7,0,1.7]){box(console,1.5,.1,.7,x,1.1,-.5,white);box(console,1.1,.6,.08,x,1.55,-.8,blue);}const dashboard=text(console,'QMS · 데이터 허브 · AI 분석',0,4.6,-3.7);
  text(console,'Process Simulation · Opcenter · Amesim',0,.3,4);text(console,'Testlab · Heeds · Insight Hub · 역설계',0,.3,4.5);
  // Separate control pedestals and protective fencing, following the PDF views.
- for(const [x,z]of [[47.5,-10],[63.5,-10]]){const g=group(root,x,z);box(g,.7,1.1,.6,0,.55,0,white);box(g,.5,.35,.05,0,1.25,.27,blue);}
- for(const [x,z,w]of [[35,-22,7]]){const g=group(root,x,z);for(const dx of [-w/2,w/2]){box(g,.09,1.2,.09,dx,.6,0,gold);box(g,w/2-1.3,.8,.04,dx/2,.65,0,new T.MeshStandardMaterial({color:0x596e74,transparent:true,opacity:.28,wireframe:true}));}}
+ for(const [x,z]of [[47.6,-14.5],[61.5,-12.3],[39.3,-27],[42.8,-28.5]]){const g=group(root,x,z);box(g,.7,1.1,.6,0,.55,0,white);box(g,.5,.35,.05,0,1.25,.27,blue);}
+ for(const [x,z,w]of []){const g=group(root,x,z);for(const dx of [-w/2,w/2]){box(g,.09,1.2,.09,dx,.6,0,gold);box(g,w/2-1.3,.8,.04,dx/2,.65,0,new T.MeshStandardMaterial({color:0x596e74,transparent:true,opacity:.28,wireframe:true}));}}
+ buildReferenceLayout(root,plan);
  // Cell 3: charging cabinet and local status terminal. Cell 4: warehouse racks and dock.
  const gc=group(root,34,3);box(gc,.9,1.8,.6,-2,.9,0,white);box(gc,.55,.55,.05,-2,1.3,.33,blue);
  const dc=group(root,44,3);for(const x of [-2,2])box(dc,.15,2.8,.15,x,1.4,-1.7,gray);box(dc,4.2,.2,.7,0,2.8,-1.7,white);
@@ -66,3 +67,25 @@ export function buildPDFCells(root,engine,plan){
 
 
 
+
+// Spatial relationships from scenario v0.4 pp.1,3,5,7; illustrative clearances, not a dimensioned installation drawing.
+function buildReferenceLayout(root,plan){
+ const pale=material(0x91a3ad),stripe=material(0xe7bb55),mint=material(0x51cbb6);
+ const area=(name,x,z,w,d,color)=>{const g=group(root,x,z);box(g,w,.02,d,0,.055,0,material(color));for(const dx of [-w/2,w/2])box(g,.045,.015,d,dx,.075,0,pale);for(const dz of [-d/2,d/2])box(g,w,.015,.045,0,.075,dz,pale);const l=text(g,name,0,.16,-d/2+.4);l.element.classList.add('subzone-label');return g;};
+ area('비전검사 · 중앙 지그 / 양측 센서',35,-27,8,8,0x204d50);
+ area('정밀측정 · O-INSPECT / MMZ G',48,-27,17,8,0x2b444e);
+ area('3D 스캔 · 대형 / 중소형 부스',38.2,-14.2,15.2,11.6,0x263e50);
+ area('비파괴검사 · UT / X-ray',55.2,-13.7,18.2,10.8,0x36434b);
+ const fixture=(x,z)=>{const g=group(root,x,z);box(g,1.5,.18,1.25,0,.17,0,gray);for(const dx of [-.55,.55])for(const dz of [-.45,.45]){box(g,.09,.25,.09,dx,.34,dz,metal);box(g,.14,.06,.14,dx,.49,dz,black);}return g;};
+ const tools=(x,z)=>{const g=group(root,x,z);box(g,1.6,.08,.65,0,.85,0,metal);for(const dx of [-.65,.65])box(g,.08,.8,.5,dx,.4,0,gray);for(const dx of [-.5,0,.5]){box(g,.18,.15,.2,dx,.98,0,black);box(g,.05,.15,.05,dx,1.13,0,metal);}text(g,'교환 툴 스테이션',0,1.5,0);};
+ // Reference images place auxiliary tools between paired stations, outside their loading apertures.
+ tools(47.4,-25.7);tools(46.4,-10.3);tools(55,-10.4);
+ fixture(34.5,-10.2);fixture(42,-10.2);fixture(58,-10.3);
+ // Short loading rails point at each ScanBox opening; their ends stop before the AMR aisle z=-7.
+ for(const [x,z]of [[34.5,-10.6],[42,-10.6]])for(const dx of [-.72,.72])box(root,.055,.045,1.1,x+dx,.11,z+.5,metal);
+ const arrow=(x,z,color,reverse=false)=>{const g=group(root,x,z);g.rotation.y=reverse?Math.PI:0;box(g,.12,.015,.75,0,.10,0,color);const tri=new T.Mesh(new T.ConeGeometry(.23,.42,3),color);tri.rotation.x=-Math.PI/2;tri.position.set(0,.1,-.5);tri.scale.z=.1;g.add(tri);};
+ for(const x of [34.2,43.2,51.2,58.5]){arrow(x,-22.8,mint);arrow(x+1,-22.8,stripe,true);}
+ // Front approach stays open, with separate equipment-side tool and fixture storage.
+ const c=plan.visuals.VIS.g;for(const x of [-.7,.7])for(const z of [-2.05,-.95]){box(c,.075,.3,.075,x,1,z,metal);box(c,.16,.08,.16,x,1.17,z,black);}
+ text(root,'반입·회수 통로',45,.11,-21);text(root,'반입·회수 통로',47,.11,-7);
+}
