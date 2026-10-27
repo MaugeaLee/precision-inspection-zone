@@ -1,3 +1,4 @@
+import {SOURCE_BAYS} from './source-bays.js';
 import {EXCEPTIONS} from './process-v04.js';
 import {scanRecipeLabel,scanBoxFor,requiresNDT,recipeFor,routeFor} from './product-policy.js';
 import {restorePayload} from './transfer.js';
@@ -56,7 +57,7 @@ export class InspectionSession extends InspZone {
   inPath(a,b){return corridorPath(a,b);}
   go(c,pts,state){
     let destination=pts.at(-1);
-    if(state==='out')destination={x:[33.5,37,40.5][{main:0,flex:1,adapt:2}[c.item.zone]],z:-31.5};
+    if(state==='out')destination={x:SOURCE_BAYS.xs[{main:0,flex:1,adapt:2}[c.item.zone]],z:SOURCE_BAYS.z};
     else if(state==='in')destination={x:this.entryX(c.i),z:INSP.entryZ};
     else if(state==='move')destination=this.cells[c.target].def;
     else if(state==='home'||state==='buffer')destination={x:INSP.station.xs[c.i],z:INSP.station.z};
