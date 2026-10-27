@@ -1,3 +1,4 @@
+import {ultrasonicMotion} from './ultrasonic.js';
 import * as T from 'three';
 import {makeProduct} from './shapes.js';
 const cache=new Map(),up=new T.Vector3(0,1,0);
@@ -23,6 +24,7 @@ export function surfaceRecipe(key){
  const recipe={points,bounds,size};cache.set(key,recipe);return recipe;
 }
 export function measurementMotion(key,q,kind,offset=new T.Vector3()){
+ if(kind==='ut')return ultrasonicMotion(key,q,offset);
  const recipe=surfaceRecipe(key),all=recipe.points;
  const count=kind==='surface'?all.length:kind==='ut'?10:8;
  const points=Array.from({length:count},(_,i)=>all[Math.round(i*(all.length-1)/(count-1))]);
