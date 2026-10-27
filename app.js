@@ -1,3 +1,4 @@
+import {syncIntegratedAI} from './integrated-ai.js';
 import {SOURCE_BAYS} from './source-bays.js';
 import {recipeControls,readRecipe,loadRecipe} from './recipe-ui.js';
 import {routeFor} from './recipe-v04.js';
@@ -20,7 +21,7 @@ import {InspectionSession,PRODUCTS,ROUTES,CELL_SHORT,RESULT,vehicleState} from '
 const $=id=>document.getElementById(id);
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
-let planScene;
+let planScene,aiState=null,aiFocusSample=null;
 let engine,renderer,scene,camera,controls,labelRenderer,selected=null,selectedEquipment=null,running=true,halted=false,speed=1,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
 const viewport=$('viewport');
 const names={DOCK:'시료 접수·도킹',VIS:'ZEISS ABIS III · AIMAX',SCAN:'3D·UT·X-ray 복합검사',OINS:'ZEISS O-INSPECT 8/6/3',MMZ:'ZEISS MMZ G',JUDGE:'AI 판정·결과 버퍼'};
@@ -113,10 +114,10 @@ function bindControls(){
   renderer.domElement.addEventListener('pointerup',e=>{if(!pointerDown||Math.hypot(e.clientX-pointerDown[0],e.clientY-pointerDown[1])>5)return;const rect=renderer.domElement.getBoundingClientRect(),mouse=new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),ray=new THREE.Raycaster();ray.setFromCamera(mouse,camera);for(const hit of ray.intersectObjects(planScene.root.children,true)){let o=hit.object;while(o){if(o.userData.zoneCell){focusCell(o.userData.zoneCell.cellId,o.userData.zoneCell.equipment);return;}o=o.parent;}}});
 }
 function restart(){
-  engine.restart(mode);engine.wallG.visible=false;for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];for(const p of c.plates)p.visible=false;}
+  aiFocusSample=null;aiState=null;engine.restart(mode);engine.wallG.visible=false;for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];for(const p of c.plates)p.visible=false;}
   running=true;halted=false;$('stop').textContent='■ 보호정지';$('stop').classList.remove('engaged');renderPlay();seedDemo();updateUI();
 }
-function seedDemo(){engine.enqueue('hood','ok');engine.enqueue('hblock','uncertain');engine.enqueue('eaxle','ng');}
+function seedDemo(){engine.enqueue('door','ok');engine.enqueue('hblock','uncertain');engine.enqueue('eaxle','ng');}
 function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재생';$('play').setAttribute('aria-label',running?'일시정지':'재생');}
 function focusCell(id,equipment=null){layoutView=false;
   if(!engine.cells[id])return;selected=id;selectedEquipment=planScene.scanBoxes?.[equipment]?equipment:null;planScene.focus=id;const c=engine.cells[id];
@@ -146,6 +147,7 @@ function updateUI(){
   for(const c of engine.order){const fault=engine.equipment[c.id].state,label=halted?'보호정지':fault==='DOWN'?'설비 이상':fault==='MAINT'?'점검 중':c.state==='BUSY'?'검사 중 · '+(c.item?.id??''):c.state==='DONE'?'후속 셀 대기':'대기';}
   for(const p of PLAN){const el=$('plan-state-'+p.id),cs=p.nodes.map(id=>engine.cells[id]);el.textContent=halted?'보호정지':!running?'일시정지':!cs.length?'순찰·점검 중':cs.some(c=>c.fault)?'설비 점검':cs.some(c=>c.state==='BUSY')?'검사·작업 중':'대기';}
   $('amr-list').innerHTML=engine.carriers.map(c=>`<div class="amr-item"><span class="amr-icon">▱</span><div><strong>${c.uid}</strong><p class="${c.state==='park'?'':'moving'}">${halted?'보호정지':c.trafficWaiting?'통로 예약 대기':vehicleState[c.state]??c.state}${c.item?' · '+escape(PRODUCTS[c.item.product][1]):''}</p></div></div>`).join('');
+  const box=$('ai-integrated');box.querySelector('strong').textContent=aiState?aiState.title+' · '+aiState.sample:'피지컬AI · 상태에 따라 행동 조정';box.querySelector('[data-ai-stage]').textContent=halted?'보호정지':!running?'일시정지':aiState?.held?'작업 보류':aiState?.stage||'준비';box.querySelector('[data-ai-message]').textContent=aiState?aiState.message:'도어·후드 비전검사 시 자세 보정 → 재안착 → 취득 불량 재검사를 같은 공정에서 보여줍니다.';box.querySelector('[data-ai-compare]').textContent=aiState?aiState.compare:'AMR 반입 → 로봇 투입 → 상태 확인·보정 → 검사·회수';
   engine.updateLabels();if(halted)for(const c of engine.order)c.chip.textContent='보호정지';updateFocus();
 }
 function resize(){const {width,height}=viewport.getBoundingClientRect();if(!width||!height)return;renderer.setSize(width,height);labelRenderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}
@@ -154,7 +156,7 @@ function frame(now){
   if(running&&!halted){let remaining=real*speed;while(remaining>0){const dt=Math.min(remaining,.08);engine.tick(dt,false,$('auto').checked);remaining-=dt;}}
   else engine.halted=halted;
   // Keep every mechanical animation frozen during pause/protective stop.
-  if(running&&!halted)engine.update(real,true,speed);planScene.update();engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
+  if(running&&!halted)engine.update(real,true,speed);aiState=syncIntegratedAI(engine);planScene.update();if(aiState&&aiFocusSample!==aiState.sample){aiFocusSample=aiState.sample;if(!selected||selected==='VIS'||selected==='A-4-1')focusCell('VIS');}engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
   if(cameraGoal){camera.position.lerp(cameraGoal.position,.07);controls.target.lerp(cameraGoal.target,.07);if(camera.position.distanceTo(cameraGoal.position)<.02)cameraGoal=null;}
   controls.update();renderer.render(scene,camera);arrangeLabels();labelRenderer.render(scene,camera);
   uiTimer+=real;if(uiTimer>.2){uiTimer=0;updateUI();}
@@ -189,6 +191,7 @@ function drawRecording(){
   ctx.fillStyle='#14242c';ctx.fillRect(0,0,w,h);const scale=Math.min(w/canvas.width,(h-140)/canvas.height),dw=canvas.width*scale,dh=canvas.height*scale,dx=(w-dw)/2,dy=75+(h-140-dh)/2;ctx.drawImage(canvas,dx,dy,dw,dh);
   ctx.fillStyle='#0e1d26';ctx.fillRect(0,0,w,75);ctx.fillRect(0,h-65,w,65);ctx.fillStyle='#66dfc2';ctx.font='bold 25px "Malgun Gothic",sans-serif';ctx.fillText('정밀검사 Zone · Inspection Studio',35,46);ctx.fillStyle='#a2c3c8';ctx.font='17px "Malgun Gothic",sans-serif';ctx.fillText('시뮬레이션   '+time(engine?.time??0),1510,44);
   if(engine&&showLabels)for(const c of PLAN.map(p=>({id:p.id,def:{x:p.x,z:p.z},state:p.nodes.some(id=>engine.cells[id].state==='BUSY')?'BUSY':'IDLE'}))){const p=new THREE.Vector3(c.def.x,3.1,c.def.z).project(camera);if(p.z>1||p.z< -1)continue;const x=dx+(p.x+1)*dw/2,y=dy+(-p.y+1)*dh/2;ctx.font='15px "Malgun Gothic",sans-serif';const text=(PLAN.find(p=>p.id===c.id)?.short??CELL_SHORT[c.id])+' · '+(halted?'정지':c.state==='BUSY'?'검사 중':'대기'),width=ctx.measureText(text).width+24;ctx.fillStyle='#10232be8';ctx.fillRect(x-width/2,y-14,width,31);ctx.fillStyle='#c2e3df';ctx.fillText(text,x-width/2+12,y+7);}
+  if(aiState){ctx.fillStyle='#102b30ee';ctx.fillRect(30,h-205,w-60,120);ctx.fillStyle='#8cf0d0';ctx.font='bold 25px sans-serif';ctx.fillText((halted?'보호정지':!running?'일시정지':aiState.held?'작업 보류':aiState.stage)+' · '+aiState.title,55,h-165);ctx.fillStyle='#efffff';ctx.font='24px sans-serif';ctx.fillText(aiState.message,55,h-125);}
   if(engine){ctx.font='18px "Malgun Gothic",sans-serif';ctx.fillStyle='#b3ccd0';ctx.fillText(`반입 ${engine.stats.samples}    최종 판정 ${engine.stats.done}    OK ${engine.stats.ok}    불확실 ${engine.stats.unc}    NG ${engine.stats.ng}`,35,h-25);ctx.fillStyle='#648f9b';ctx.font='14px "Malgun Gothic",sans-serif';ctx.fillText('검사 동작·결과는 시나리오 모사입니다.',1460,h-25);}
 }
 init();

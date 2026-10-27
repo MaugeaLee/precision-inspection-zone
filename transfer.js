@@ -39,7 +39,8 @@ export function prepareTransfer(c,v){
   r.pick=v.g.worldToLocal(carrier.g.localToWorld(new T.Vector3(c.aiDemo.pickX||0,.88,0)));
   r.pickRotation=new T.Quaternion().setFromAxisAngle(new T.Vector3(0,1,0),c.aiDemo.pickYaw||0);
  }
- const m=v.referenceVision?visionTransfer(c.progress,r.pick,v.sample.position,r.pickRotation,v.fixtureRotation,r.payloadHeight,r.restTarget):transferMotion(c.progress,r.pick,v.sampleHome||new T.Vector3(0,v.sample.position.y,-1.5),r.payloadHeight);
+ const phase=c.visualProgress??c.progress;
+ const m=v.referenceVision?visionTransfer(phase,r.pick,v.sample.position,r.pickRotation,v.fixtureRotation,r.payloadHeight,r.restTarget):transferMotion(phase,r.pick,v.sampleHome||new T.Vector3(0,v.sample.position.y,-1.5),r.payloadHeight);
  r.transfer=m;return m;
 }
 export function applyTransfer(c,v){
@@ -56,7 +57,7 @@ export function applyTransfer(c,v){
  if(c.id!=='SCAN')v.sample.visible=false;
  const toolRotation=m.owner==='gripper'?yaw:m.owner==='amr'?r.pickRotation:(v.fixtureRotation||new T.Quaternion());
  r.handlingTool.update(c.item.product,r.payloadSize,m.closed,toolRotation);
- if(c.progress<.16||c.progress>=.84)v.motionText=m.phase;
+ if((c.visualProgress??c.progress)<.16||(c.visualProgress??c.progress)>=.84)v.motionText=m.phase;
 }
 
 
