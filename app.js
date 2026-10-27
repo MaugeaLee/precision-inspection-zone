@@ -1,3 +1,4 @@
+import {SOURCE_BAYS} from './source-bays.js';
 import {recipeControls,readRecipe,loadRecipe} from './recipe-ui.js';
 import {routeFor} from './recipe-v04.js';
 import {EXCEPTIONS} from './process-v04.js';
@@ -68,8 +69,8 @@ function makeSourceBays(){
 
   const material=new THREE.MeshStandardMaterial({color:0x254b52,roughness:.8});
   for(const [i,name]of ['정밀조립','유연생산','적응가공'].entries()){
-    const x=[33.5,37,40.5][i];const pad=new THREE.Mesh(new THREE.BoxGeometry(2.7,.08,2),material);pad.position.set(x,.01,-31.5);pad.receiveShadow=true;scene.add(pad);
-    const element=document.createElement('div');element.className='source-label';element.style.cssText='font-size:8px;color:#a6cec8;background:#19363ce8;padding:4px 7px;border:1px solid #3e6668;border-radius:3px;white-space:nowrap';element.textContent=name+' 샘플 반입';const label=new CSS2DObject(element);label.position.set(x,.35,-32.3);scene.add(label);
+    const x=SOURCE_BAYS.xs[i];const pad=new THREE.Mesh(new THREE.BoxGeometry(SOURCE_BAYS.width,.08,SOURCE_BAYS.depth),material);pad.position.set(x,.01,SOURCE_BAYS.z);pad.receiveShadow=true;scene.add(pad);
+    const element=document.createElement('div');element.className='source-label';element.style.cssText='font-size:8px;color:#a6cec8;background:#19363ce8;padding:4px 7px;border:1px solid #3e6668;border-radius:3px;white-space:nowrap';element.textContent=name+' · AMR 반입 대기';const label=new CSS2DObject(element);label.position.set(x,.35,SOURCE_BAYS.z-.8);scene.add(label);
   }
 }
 function makeCellList(){
