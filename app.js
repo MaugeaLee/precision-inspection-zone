@@ -78,7 +78,7 @@ function makeCellList(){
   const links=$('cell-list').querySelector('.station-links');for(const id of ['8160','5130']){const b=document.createElement('button');b.dataset.cell='SCAN';b.dataset.equipment=id;b.textContent='ScanBox '+id;links.append(b);}
   const legend=document.createElement('div');legend.className='inspection-legend';legend.innerHTML='<strong>검사 장비별 구역</strong><small>표면·피처는 같은 부스의 센서 영역</small>';for(const z of INSPECTION_AREAS){const b=document.createElement('button');b.textContent=z.name;b.style.borderLeft='5px solid #'+z.color.toString(16).padStart(6,'0');b.onclick=()=>focusCell(z.cell);legend.append(b);}$('cell-list').prepend(legend);
   document.querySelectorAll('[data-cell]').forEach(b=>b.onclick=()=>focusCell(b.dataset.cell,b.dataset.equipment));
-  for(const [caption,id,x,z,d] of [['비전검사 배치','A-4-1',35,-27,14],['정밀측정 배치','A-4-1',48,-27,20],['3D 스캔 배치','A-4-2',38,-14,22],['비파괴검사 배치','A-4-2',55,-13,21]]){const b=document.createElement('button');b.textContent=caption;links.append(b);b.onclick=()=>{focusPlan(id);layoutView=true;cameraGoal={target:new THREE.Vector3(x,.8,z),position:new THREE.Vector3(x+d*.35,d*.7,z+d)};$('focus-card').hidden=true;};}
+  for(const [caption,id,x,z,d] of [['비전검사 배치','A-4-1',35,-27,14],['정밀측정 배치','A-4-1',48,-27,20],['3D 스캔 배치','A-4-2',38,-14,22],['비파괴검사 배치','A-4-2',55,-13,21]]){const b=document.createElement('button');b.textContent=caption;links.append(b);b.onclick=()=>{focusPlan(id);layoutView=true;cameraGoal={target:new THREE.Vector3(x,.8,z),position:new THREE.Vector3(x+d*.35,d*.7,z+d)};if(caption==='비전검사 배치'){cameraGoal={target:new THREE.Vector3(35,1.1,-27.6),position:new THREE.Vector3(39,4.5,-18)};}$('focus-card').hidden=true;};}
 }
 let layoutView=false;
 function focusPlan(id){layoutView=false;const p=PLAN.find(p=>p.id===id),distance=Math.max(12,Math.max(p.w,p.d)*1.05);selected=id;selectedEquipment=null;planScene.focus=id;cameraGoal={target:new THREE.Vector3(p.x,.7,p.z),position:new THREE.Vector3(p.x+distance,distance,p.z+distance)};updateFocus();}
@@ -120,6 +120,7 @@ function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재�
 function focusCell(id,equipment=null){layoutView=false;
   if(!engine.cells[id])return;selected=id;selectedEquipment=planScene.scanBoxes?.[equipment]?equipment:null;planScene.focus=id;const c=engine.cells[id];
   cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-3.5),position:new THREE.Vector3(c.def.x+7.8,6.3,c.def.z+4)};
+  if(id==='VIS'){const at=planScene.visuals.VIS.g.position;cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.1,-1.1)),position:at.clone().add(new THREE.Vector3(3.8,4,8))};}
   if(selectedEquipment){const at=planScene.scanBoxes[selectedEquipment].g.getWorldPosition(new THREE.Vector3());cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.5,0)),position:at.clone().add(selectedEquipment==='8160'?new THREE.Vector3(10,9,15):new THREE.Vector3(6,6,9))};}else if(id==='SCAN'){cameraGoal={target:new THREE.Vector3(47,1,-14),position:new THREE.Vector3(62,19,13)};}
   document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id&&(b.dataset.equipment||null)===selectedEquipment));updateFocus();
 }

@@ -30,7 +30,7 @@ export function buildPDFCells(root,engine,plan){
  }
  const xr=group(root,58,-14);xr.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(xr,5,.3,3.8,0,.15,0,gray);box(xr,5,2.8,.2,0,1.7,-1.7);for(const x of [-2.4,2.4])box(xr,.2,2.8,3.4,x,1.7,0);box(xr,5,.2,3.8,0,3.2,0);box(xr,4,.8,1.8,0,.7,.9,black);const door=box(xr,3.7,2.3,.15,0,1.95,1.72,gray);const xs=new T.Group();xs.position.set(0,1.15,.5);xr.add(xs);const xl=text(xr,'인라인 X-ray · 대기',0,3.7,0);box(xr,.4,.5,.15,2.7,1.4,1.5,blue);text(xr,'차폐 · 안전 인터록 (모사)',0,.2,2.3);const source=box(xr,.35,.45,.35,-1.8,1.7,0,blue),detector=box(xr,.1,1.2,1.2,1.8,1.7,0,darkMaterial());const beam=box(xr,3.4,.025,.5,0,1.7,0,new T.MeshBasicMaterial({color:0xf1ba5b,transparent:true,opacity:.18,depthWrite:false}));beam.visible=false;
  // Cell 1 tooling and data acquisition, not an extra production station.
- const tooling=group(root,32.65,-26);box(tooling,1.2,.75,.8,0,.4,0,gray);for(const x of [-.4,0,.4])box(tooling,.17,.25,.3,x,.9,0,black);text(tooling,'그리퍼 · 툴체인저',0,1.3,0);rack(root,55.7,-29.5);
+ const tooling=group(root,32.2,-27.7);box(tooling,1.2,.75,.8,0,.4,0,gray);for(const x of [-.4,0,.4])box(tooling,.17,.25,.3,x,.9,0,black);text(tooling,'그리퍼 · 툴체인저',0,1.3,0);plan.visuals.VIS.g.attach(tooling);rack(root,55.7,-29.5);
  const dg=group(root,34,3);box(dg,2.5,.12,2,0,.06,0,gray);box(dg,.25,1.1,2,-1.1,.6,0,white);text(dg,'4족 로봇 도킹 · 충전',0,1.6,0);
  const dd=group(root,44,3);box(dd,2.4,.3,2.4,0,.15,0,gray);box(dd,1.8,.08,1.8,0,.35,0,blue);text(dd,'드론 도킹 · 충전',0,1.1,0);
  // Sensor modules on the representative mobile robots.
@@ -87,7 +87,7 @@ function buildReferenceLayout(root,plan){
  const arrow=(x,z,color,reverse=false)=>{const g=group(root,x,z);g.rotation.y=reverse?Math.PI:0;box(g,.12,.015,.75,0,.10,0,color);const tri=new T.Mesh(new T.ConeGeometry(.23,.42,3),color);tri.rotation.x=-Math.PI/2;tri.position.set(0,.1,-.5);tri.scale.z=.1;g.add(tri);};
  for(const x of [34.2,43.2,51.2,58.5]){arrow(x,-22.8,mint);arrow(x+1,-22.8,stripe,true);}
  // Front approach stays open, with separate equipment-side tool and fixture storage.
- const c=plan.visuals.VIS.g;for(const x of [-.7,.7])for(const z of [-2.05,-.95]){box(c,.075,.3,.075,x,1,z,metal);box(c,.16,.08,.16,x,1.17,z,black);}
+ // Vision fixture supports are built with the upright product holder in plan.js.
  text(root,'반입·회수 통로',45,.11,-21);text(root,'반입·회수 통로',47,.11,-7);
 }
 
