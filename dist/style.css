@@ -23,3 +23,5 @@
 .recipe-v04{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 24px;background:#10232d;border-top:1px solid #294650;font-size:12px}.recipe-v04 label{display:flex;gap:5px;align-items:center}.recipe-v04 select{padding:7px;border-radius:5px;background:#19333e;color:#d9eeef;border:1px solid #42606b}.recipe-v04 small{width:100%;color:#91acb8}
 
 .inspection-zone-label{border:1px solid;border-left-width:4px;cursor:pointer;font-weight:700;background:#102631ed;padding:5px 8px}.inspection-legend{display:grid;gap:5px;margin-top:12px;padding-top:10px;border-top:1px solid #31454d}.inspection-legend strong{font-size:12px}.inspection-legend small{font-size:10px;color:#9ab0b9}.inspection-legend button{text-align:left;font-size:11px;padding:6px 7px;background:#172e38;color:#d9edf0;border:1px solid #344952;border-radius:4px}
+
+.ai-story-link{display:inline-block;margin:6px 10px;padding:9px 12px;background:#73e5cb;color:#102d32;border-radius:7px;font-weight:700;text-decoration:none}

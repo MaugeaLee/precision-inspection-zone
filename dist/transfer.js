@@ -35,6 +35,10 @@ export function prepareTransfer(c,v){
   r.pickRotation=v.g.getWorldQuaternion(new T.Quaternion()).invert().multiply(carrier.g.getWorldQuaternion(new T.Quaternion()));
   r.fixtureFrame??=new T.Group();v.g.add(r.fixtureFrame);
  }
+ if(c.aiDemo){
+  r.pick=v.g.worldToLocal(carrier.g.localToWorld(new T.Vector3(c.aiDemo.pickX||0,.88,0)));
+  r.pickRotation=new T.Quaternion().setFromAxisAngle(new T.Vector3(0,1,0),c.aiDemo.pickYaw||0);
+ }
  const m=v.referenceVision?visionTransfer(c.progress,r.pick,v.sample.position,r.pickRotation,v.fixtureRotation,r.payloadHeight,r.restTarget):transferMotion(c.progress,r.pick,v.sampleHome||new T.Vector3(0,v.sample.position.y,-1.5),r.payloadHeight);
  r.transfer=m;return m;
 }
@@ -45,7 +49,7 @@ export function applyTransfer(c,v){
  const yaw=m.rotation||new T.Quaternion().slerpQuaternions(m.unload?new T.Quaternion():r.pickRotation,m.unload?r.pickRotation:new T.Quaternion(),m.turn??0);
  if(m.owner==='gripper'){
   frame.add(payload);payload.position.set(0,-r.payloadHeight-.08,0);if(v.referenceVision)payload.position.applyQuaternion(yaw);payload.quaternion.copy(yaw);payload.visible=true;
- }else if(m.owner==='amr')restorePayload(c.occ);
+ }else if(m.owner==='amr'){restorePayload(c.occ);if(c.aiDemo){payload.position.x=c.aiDemo.pickX||0;payload.rotation.y=c.aiDemo.pickYaw||0;}}
  else {
   r.fixtureFrame.position.copy(v.sample.position);r.fixtureFrame.add(payload);payload.position.set(0,0,0);payload.quaternion.copy(v.fixtureRotation||new T.Quaternion());payload.visible=c.id!=='SCAN';
  }

@@ -11,3 +11,12 @@
 
 선택 검사 조합 1,344 프레임, 비전 4모드, 인터록 차단, 보류 중 진행 정지, 해당 공정 재검사 및 AMR 혼합 운행 회귀 검증.
 제품별 기본 레시피는 시연 예시이며 생산용 승인 조건이 아니다. 실제 센서 측정값, 교정, 안전 PLC, 리워크 및 미해결 예외의 자동 처리는 구현 범위가 아니다. ScanBox와 NDT 사이 이송은 개념 단계 표현이며 모든 내부 이송이 물리적으로 연속된 로봇 동작은 아니다.
+
+## 2026-10-27 Physical AI explanatory animation
+- Added physical-ai.html, linked from the main factory header: three 30-second chapters, pause, seek, replay and chapter selection.
+- Door pickup: example AMR load offset/yaw changes the pickup pose and gripper trajectory.
+- Reacquisition: ABIS 3 observes the same sample location from a changed sensor pose; acquisition is disabled until the confirmation stage.
+- Fixture recovery: reverse the placement approach to regrasp/lift, shift to the nominal location, lower and release, then resume inspection.
+- Captions show AS-IS / TO-BE and perception, decision, action, verification. They are included in a 1920x1080 silent WebM recording.
+- All detections, decisions and confirmations are scripted examples, explicitly labeled. No learned policy, camera feed, inference service or live robot integration is claimed.
+- Verification: 4506 forward/reverse timeline frames, max handler target error 0.002, max sensor target error 0.012 (scene units); payload retains gripper ownership. Existing transfer regression: 528 checks passed. These are visualization checks, not equipment safety/accuracy certification.
