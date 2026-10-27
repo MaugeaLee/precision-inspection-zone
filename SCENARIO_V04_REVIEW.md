@@ -20,3 +20,6 @@
 - Captions show AS-IS / TO-BE and perception, decision, action, verification. They are included in a 1920x1080 silent WebM recording.
 - All detections, decisions and confirmations are scripted examples, explicitly labeled. No learned policy, camera feed, inference service or live robot integration is claimed.
 - Verification: 4506 forward/reverse timeline frames, max handler target error 0.002, max sensor target error 0.012 (scene units); payload retains gripper ownership. Existing transfer regression: 528 checks passed. These are visualization checks, not equipment safety/accuracy certification.
+
+## Unified demo mode (supersedes the separate explanation page)
+Physical AI example actions now run within the actual VIS sample lifecycle for door/hood surface recipes. Logical progress remains monotonic; the visual progress performs regrasp/reseating before inspection, then revisits an acquisition point before continuing the chosen recipe and unloading to the same AMR. The existing pause, protective stop, fault, process hold, speed, reset and recording controls govern the sequence. VIS examples use at least 100 simulation seconds for readability. The main sidebar and existing video recorder show synchronized explanatory captions. The previous physical-ai.html URL redirects to the main demo. No separate mode selector remains.

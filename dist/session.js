@@ -1,3 +1,4 @@
+import {supportsAI} from './integrated-ai.js';
 import {SOURCE_BAYS} from './source-bays.js';
 import {EXCEPTIONS} from './process-v04.js';
 import {scanRecipeLabel,scanBoxFor,requiresNDT,recipeFor,routeFor} from './product-policy.js';
@@ -28,7 +29,7 @@ export class InspectionSession extends InspZone {
     this.events=[];this.records=[];this.trace=[];
     for(const c of Object.values(this.equipment))Object.assign(c,{state:'IDLE',remaining:0,busy:false});
     mode='dark';this.sim.mode.key=mode;super.setup(this.sim,null,true);this.wallG.visible=false;
-    for(const c of this.order)c.processHold=null;this.traffic=new TrafficReservations();this.sourceTimer=0;this.autoIndex=0;this.sim.extMovers=this.carriers.map(c=>this.tele(c));
+    for(const c of this.order){c.processHold=null;delete c.aiDemo;delete c.visualProgress;}this.traffic=new TrafficReservations();this.sourceTimer=0;this.autoIndex=0;this.sim.extMovers=this.carriers.map(c=>this.tele(c));
     this.emit('info','정밀검사존 준비 완료',{obs:'5개 사업계획 셀 · 검사 AMR 3대',dec:'피지컬AI 시연 모드',act:'샘플 반입 요청 대기'});
   }
   onEvent(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
@@ -85,7 +86,9 @@ export class InspectionSession extends InspZone {
       this.go(c,[c,dest.def],'move');return;
     }
     const buffer=c.state==='buffer';if(buffer)c.state='home';
+    const previousState=c.state;
     super.stepCarrier(c,dt);
+    if(previousState!=='work'&&c.state==='work'&&c.at==='VIS'&&supportsAI(c.item))this.cells.VIS.cur=Math.max(this.cells.VIS.cur,100);
     if(buffer)c.state=c.state==='park'?'buffered':'buffer';
     if(!MOVING.has(c.state))this.traffic.release(c);
   }
