@@ -25,7 +25,7 @@ export function buildPDFCells(root,engine,plan){
  const large=buildScanBox(root,34.5,-14,'8160');const small=buildScanBox(root,42,-11.05,'5130');
  plan.scanBoxes={};
  for(const [id,station,name]of [['8160',large,'ATOS ScanBox 8160'],['5130',small,'ATOS ScanBox 5130']]){
-  station.g.userData.zoneCell={zone:'insp',cellId:'SCAN',equipment:id};plan.scanBoxes[id]={g:station.g,name};
+  station.g.userData.zoneCell={zone:'insp',cellId:'SCAN',equipment:id};plan.scanBoxes[id]={g:station.g,name,robots:station.robots};
   station.g.traverse(o=>{if(!o.isCSS2DObject||!o.element.textContent.includes('ScanBox'))return;const el=o.element;el.classList.add('equipment-select');el.setAttribute('role','button');el.setAttribute('tabindex','0');el.setAttribute('aria-label',name+' 선택');el.onclick=e=>{e.stopPropagation();plan.onEquipmentFocus?.('SCAN',id);};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}};});
  }
  const xr=group(root,58,-14);xr.userData.zoneCell={zone:'insp',cellId:'SCAN'};box(xr,5,.3,3.8,0,.15,0,gray);box(xr,5,2.8,.2,0,1.7,-1.7);for(const x of [-2.4,2.4])box(xr,.2,2.8,3.4,x,1.7,0);box(xr,5,.2,3.8,0,3.2,0);box(xr,4,.8,1.8,0,.7,.9,black);const door=box(xr,3.7,2.3,.15,0,1.95,1.72,gray);const xs=new T.Group();xs.position.set(0,1.15,.5);xr.add(xs);const xl=text(xr,'인라인 X-ray · 대기',0,3.7,0);box(xr,.4,.5,.15,2.7,1.4,1.5,blue);text(xr,'차폐 · 안전 인터록 (모사)',0,.2,2.3);const source=box(xr,.35,.45,.35,-1.8,1.7,0,blue),detector=box(xr,.1,1.2,1.2,1.8,1.7,0,darkMaterial());const beam=box(xr,3.4,.025,.5,0,1.7,0,new T.MeshBasicMaterial({color:0xf1ba5b,transparent:true,opacity:.18,depthWrite:false}));beam.visible=false;

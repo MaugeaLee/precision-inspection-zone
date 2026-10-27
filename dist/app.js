@@ -1,3 +1,4 @@
+import {createRobotCameras,hideCameraBody} from './robot-cameras.js';
 import {syncIntegratedAI} from './integrated-ai.js';
 import {SOURCE_BAYS} from './source-bays.js';
 import {recipeControls,readRecipe,loadRecipe} from './recipe-ui.js';
@@ -21,7 +22,10 @@ import {InspectionSession,PRODUCTS,ROUTES,CELL_SHORT,RESULT,vehicleState} from '
 const $=id=>document.getElementById(id);
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
-let planScene,aiState=null,aiFocusSample=null;
+let planScene,aiState=null,aiFocusSample=null,robotCameras,robotCamera=null;
+function selectRobotCamera(e){robotCamera=e;cameraGoal=null;controls.enabled=false;camera.near=.015;camera.fov=65;camera.updateProjectionMatrix();$('robot-camera-select').value=e.id;$('robot-camera-banner').hidden=false;$('robot-camera-name').textContent=e.name+' · 가상 작업 시점';$('focus-card').hidden=true;}
+function leaveRobotCamera(){robotCamera=null;if(!controls)return;controls.enabled=true;camera.near=.1;camera.fov=40;camera.up.set(0,1,0);camera.updateProjectionMatrix();$('robot-camera-banner').hidden=true;$('robot-camera-select').value='';}
+
 let engine,renderer,scene,camera,controls,labelRenderer,selected=null,selectedEquipment=null,running=true,halted=false,speed=1,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
 const viewport=$('viewport');
 const names={DOCK:'시료 접수·도킹',VIS:'ZEISS ABIS III · AIMAX',SCAN:'3D·UT·X-ray 복합검사',OINS:'ZEISS O-INSPECT 8/6/3',MMZ:'ZEISS MMZ G',JUDGE:'AI 판정·결과 버퍼'};
@@ -49,7 +53,7 @@ async function init(){
     catch(e){console.warn('기본 도형 모델로 전환합니다.',e);RENDER.loaded=false;toast('기본 장비 모델로 실행합니다.');}
     await loadShapes();
     engine=new InspectionSession(scene);
-    planScene=new PlanScene(engine,scene,focusPlan);planScene.onEquipmentFocus=focusCell;
+    planScene=new PlanScene(engine,scene,focusPlan);planScene.onEquipmentFocus=focusCell;robotCameras=createRobotCameras(planScene,engine,selectRobotCamera);for(const e of robotCameras.entries){const o=document.createElement('option');o.value=e.id;o.textContent=e.name;$('robot-camera-select').append(o);}$('robot-camera-select').onchange=()=>{const e=robotCameras.entries.find(e=>e.id===$('robot-camera-select').value);if(e)selectRobotCamera(e);else $('overview').click();};$('robot-camera-exit').onclick=()=>$('overview').click();
     engine.onEvent(()=>renderLog());
     makeFloor();contactShadows(scene,[...engine.order.map(c=>[c.def.x,c.def.z-3.7,7,6]),[34,-14,7,6],[42,-14,6,5],[60,-14,7,6]]);makeSourceBays();makeCellList();bindControls();makeRoute();
     for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];c.el.addEventListener('pointerdown',e=>{e.stopPropagation();focusCell(c.id);});for(const p of c.plates)p.visible=false;}
@@ -83,7 +87,7 @@ function makeCellList(){
   for(const [caption,id,x,z,d] of [['비전검사 배치','A-4-1',35,-27,14],['정밀측정 배치','A-4-1',48,-27,20],['3D 스캔 배치','A-4-2',38,-14,22],['비파괴검사 배치','A-4-2',55,-13,21]]){const b=document.createElement('button');b.textContent=caption;links.append(b);b.onclick=()=>{focusPlan(id);layoutView=true;cameraGoal={target:new THREE.Vector3(x,.8,z),position:new THREE.Vector3(x+d*.35,d*.7,z+d)};if(caption==='비전검사 배치'){cameraGoal={target:new THREE.Vector3(35,1.1,-27.6),position:new THREE.Vector3(39,4.5,-18)};}$('focus-card').hidden=true;};}
 }
 let layoutView=false;
-function focusPlan(id){layoutView=false;const p=PLAN.find(p=>p.id===id),distance=Math.max(12,Math.max(p.w,p.d)*1.05);selected=id;selectedEquipment=null;planScene.focus=id;cameraGoal={target:new THREE.Vector3(p.x,.7,p.z),position:new THREE.Vector3(p.x+distance,distance,p.z+distance)};updateFocus();}
+function focusPlan(id){leaveRobotCamera();layoutView=false;const p=PLAN.find(p=>p.id===id),distance=Math.max(12,Math.max(p.w,p.d)*1.05);selected=id;selectedEquipment=null;planScene.focus=id;cameraGoal={target:new THREE.Vector3(p.x,.7,p.z),position:new THREE.Vector3(p.x+distance,distance,p.z+distance)};updateFocus();}
 function bindControls(){
   document.querySelector('.scenario-panel').insertAdjacentHTML('afterend',recipeControls+`<section class="recipe-v04"><strong>공정 예외 시연</strong><select id="exception-kind" aria-label="공정 예외">${Object.entries(EXCEPTIONS).map(([id,v])=>`<option value="${id}">${v[0]}</option>`).join('')}</select><button id="process-hold">선택 공정 보류</button><button id="process-resume">조치 확인 · 재개/재검사</button><small>검사 중인 장비를 선택한 뒤 적용합니다. NG는 리워크 조치 확인을 모사한 후 재검사합니다.</small></section>`);
   loadRecipe($('product').value);document.querySelectorAll('.recipe-v04 select,.recipe-v04 input').forEach(e=>e.onchange=makeRoute);
@@ -94,7 +98,7 @@ function bindControls(){
   $('play').onclick=()=>{running=!running;renderPlay();};
   document.querySelectorAll('[data-speed]').forEach(b=>b.onclick=()=>{speed=Number(b.dataset.speed);document.querySelectorAll('[data-speed]').forEach(x=>x.classList.toggle('active',x===b));});
   $('reset').onclick=()=>{stopRecording();restart();toast('검사 시연을 초기화했습니다.');};
-  $('overview').onclick=()=>{selected=null;selectedEquipment=null;planScene.focus=null;$('focus-card').hidden=true;document.querySelectorAll('[data-cell]').forEach(b=>b.classList.remove('active'));cameraGoal={position:new THREE.Vector3(88,70,45),target:new THREE.Vector3(33,0,-12)};};
+  $('overview').onclick=()=>{leaveRobotCamera();selected=null;selectedEquipment=null;planScene.focus=null;$('focus-card').hidden=true;document.querySelectorAll('[data-cell]').forEach(b=>b.classList.remove('active'));cameraGoal={position:new THREE.Vector3(88,70,45),target:new THREE.Vector3(33,0,-12)};};
   $('labels').onclick=()=>{showLabels=!showLabels;engine.setLabels(false);planScene.setLabels(showLabels);for(const c of engine.order)for(const p of c.plates)p.visible=false;$('labels').classList.toggle('active',showLabels);$('labels').setAttribute('aria-pressed',showLabels);document.querySelectorAll('.source-label').forEach(el=>el.style.visibility=showLabels?'visible':'hidden');};
   $('data-lines').onclick=()=>{showData=!showData;$('data-lines').classList.toggle('active',showData);$('data-lines').setAttribute('aria-pressed',showData);};
   $('render-quality').onchange=()=>{const high=$('render-quality').value==='high';renderer.setPixelRatio(Math.min(Math.max(devicePixelRatio,high?1.5:1),high?2:1.5));sunQuality(high);resize();};
@@ -111,15 +115,16 @@ function bindControls(){
   // Raycast equipment rather than requiring the small label to be clicked.
   let pointerDown;
   renderer.domElement.addEventListener('pointerdown',e=>pointerDown=[e.clientX,e.clientY]);
-  renderer.domElement.addEventListener('pointerup',e=>{if(!pointerDown||Math.hypot(e.clientX-pointerDown[0],e.clientY-pointerDown[1])>5)return;const rect=renderer.domElement.getBoundingClientRect(),mouse=new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),ray=new THREE.Raycaster();ray.setFromCamera(mouse,camera);for(const hit of ray.intersectObjects(planScene.root.children,true)){let o=hit.object;while(o){if(o.userData.zoneCell){focusCell(o.userData.zoneCell.cellId,o.userData.zoneCell.equipment);return;}o=o.parent;}}});
+  renderer.domElement.addEventListener('pointerup',e=>{if(!pointerDown||Math.hypot(e.clientX-pointerDown[0],e.clientY-pointerDown[1])>5)return;const rect=renderer.domElement.getBoundingClientRect(),mouse=new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),ray=new THREE.Raycaster();ray.setFromCamera(mouse,camera);const robotHit=robotCameras.find(ray.intersectObjects([...planScene.root.children,...engine.carriers.map(c=>c.g)],true));if(robotHit){selectRobotCamera(robotHit);return;}for(const hit of ray.intersectObjects(planScene.root.children,true)){let o=hit.object;while(o){if(o.userData.zoneCell){focusCell(o.userData.zoneCell.cellId,o.userData.zoneCell.equipment);return;}o=o.parent;}}});
 }
 function restart(){
+  leaveRobotCamera();$('overview').click();
   aiFocusSample=null;aiState=null;engine.restart(mode);engine.wallG.visible=false;for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];for(const p of c.plates)p.visible=false;}
   running=true;halted=false;$('stop').textContent='■ 보호정지';$('stop').classList.remove('engaged');renderPlay();seedDemo();updateUI();
 }
 function seedDemo(){engine.enqueue('door','ok');engine.enqueue('hblock','uncertain');engine.enqueue('eaxle','ng');}
 function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재생';$('play').setAttribute('aria-label',running?'일시정지':'재생');}
-function focusCell(id,equipment=null){layoutView=false;
+function focusCell(id,equipment=null){leaveRobotCamera();layoutView=false;
   if(!engine.cells[id])return;selected=id;selectedEquipment=equipment==='UT'?'UT':planScene.scanBoxes?.[equipment]?equipment:null;planScene.focus=id;const c=engine.cells[id];
   cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-3.5),position:new THREE.Vector3(c.def.x+7.8,6.3,c.def.z+4)};
   if(id==='VIS'){const at=planScene.visuals.VIS.g.position;cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.1,-1.1)),position:at.clone().add(new THREE.Vector3(3.8,4,8))};}
@@ -127,6 +132,7 @@ function focusCell(id,equipment=null){layoutView=false;
   document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id&&(b.dataset.equipment||null)===selectedEquipment));updateFocus();
 }
 function updateFocus(){
+  if(robotCamera){$('focus-card').hidden=true;return;}
   if(layoutView){$('focus-card').hidden=true;return;}
   if(!selected)return;const plan=PLAN.find(p=>p.id===selected);if(plan){$('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">Cell ${plan.id.slice(-1)}</div><h3>${plan.name}</h3><p>${plan.description}</p><p>${PDF_CELLS[Number(plan.id.slice(-1))-1].checks}</p><p class="detail-note">PDF ${PDF_CELLS[Number(plan.id.slice(-1))-1].pages}쪽 · 상단 ‘PDF 셀 구성’에서 장비 목록 확인</p>`;return;}const c=engine.cells[selected],fault=engine.equipment[selected].state;
   $('focus-card').hidden=false;$('focus-card').innerHTML=`<div class="eyebrow">QIS-${selected}</div><h3>${selectedEquipment==='UT'?'접촉식 초음파 · 점용접 검사':selectedEquipment?planScene.scanBoxes[selectedEquipment].name:names[selected]}</h3><p>${selectedEquipment==='UT'?'H2515 · 매트릭스 프로브·추종부·결합매질·분석 단말 / 참고 설계':selectedEquipment?(selectedEquipment==='8160'?'BIW·차체·대형 패널 · ATOS 5X':'도어·후드·중소형 패널 · ATOS 5'):escape(c.def.use)}</p><div class="detail-grid"><div><span>현재 상태</span><b>${c.processHold?'공정 보류':halted?'보호정지':fault!=='IDLE'?fault==='DOWN'?'이상':'점검 중':c.state==='BUSY'?'검사 중':c.state==='DONE'?'인계 대기':'대기'}</b></div><div><span>작업 진행</span><b>${Math.round(c.progress*100)}%</b></div><div><span>기준 사이클</span><b>${Math.round(c.def.cycle*engine.mul)}s</b></div><div><span>작업 완료</span><b>${c.done}회</b></div></div><p class="motion-step">${escape(planScene.visuals[selected]?.motionText||"대기")}</p><p class="detail-note">제품 표면 기반 예시 경로 · 장비별 검사 순서 모사</p>`;
@@ -156,9 +162,10 @@ function frame(now){
   if(running&&!halted){let remaining=real*speed;while(remaining>0){const dt=Math.min(remaining,.08);engine.tick(dt,false,$('auto').checked);remaining-=dt;}}
   else engine.halted=halted;
   // Keep every mechanical animation frozen during pause/protective stop.
-  if(running&&!halted)engine.update(real,true,speed);aiState=syncIntegratedAI(engine);planScene.update();if(aiState&&aiFocusSample!==aiState.sample){aiFocusSample=aiState.sample;if(!selected||selected==='VIS'||selected==='A-4-1')focusCell('VIS');}engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
+  if(running&&!halted)engine.update(real,true,speed);aiState=syncIntegratedAI(engine);planScene.update();if(aiState&&aiFocusSample!==aiState.sample){aiFocusSample=aiState.sample;if(!robotCamera&&(!selected||selected==='VIS'||selected==='A-4-1'))focusCell('VIS');}engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
   if(cameraGoal){camera.position.lerp(cameraGoal.position,.07);controls.target.lerp(cameraGoal.target,.07);if(camera.position.distanceTo(cameraGoal.position)<.02)cameraGoal=null;}
-  controls.update();renderer.render(scene,camera);arrangeLabels();labelRenderer.render(scene,camera);
+  robotCameras.refresh();if(robotCamera){scene.updateMatrixWorld(true);const pose=robotCamera.pose();camera.position.copy(pose.position);const direction=pose.target.clone().sub(pose.position).normalize();camera.up.set(0,Math.abs(direction.y)>.98?0:1,Math.abs(direction.y)>.98?-1:0);camera.lookAt(pose.target);}
+  else controls.update();const restoreBody=robotCamera?hideCameraBody(robotCamera):null;renderer.render(scene,camera);restoreBody?.();arrangeLabels();labelRenderer.domElement.style.visibility=robotCamera?'hidden':'visible';labelRenderer.render(scene,camera);
   uiTimer+=real;if(uiTimer>.2){uiTimer=0;updateUI();}
   if(recorder?.state==='recording')drawRecording();requestAnimationFrame(frame);
 }
@@ -190,7 +197,8 @@ function drawRecording(){
   if(!recordContext)return;const ctx=recordContext,w=recordCanvas.width,h=recordCanvas.height,canvas=renderer.domElement;
   ctx.fillStyle='#14242c';ctx.fillRect(0,0,w,h);const scale=Math.min(w/canvas.width,(h-140)/canvas.height),dw=canvas.width*scale,dh=canvas.height*scale,dx=(w-dw)/2,dy=75+(h-140-dh)/2;ctx.drawImage(canvas,dx,dy,dw,dh);
   ctx.fillStyle='#0e1d26';ctx.fillRect(0,0,w,75);ctx.fillRect(0,h-65,w,65);ctx.fillStyle='#66dfc2';ctx.font='bold 25px "Malgun Gothic",sans-serif';ctx.fillText('정밀검사 Zone · Inspection Studio',35,46);ctx.fillStyle='#a2c3c8';ctx.font='17px "Malgun Gothic",sans-serif';ctx.fillText('시뮬레이션   '+time(engine?.time??0),1510,44);
-  if(engine&&showLabels)for(const c of PLAN.map(p=>({id:p.id,def:{x:p.x,z:p.z},state:p.nodes.some(id=>engine.cells[id].state==='BUSY')?'BUSY':'IDLE'}))){const p=new THREE.Vector3(c.def.x,3.1,c.def.z).project(camera);if(p.z>1||p.z< -1)continue;const x=dx+(p.x+1)*dw/2,y=dy+(-p.y+1)*dh/2;ctx.font='15px "Malgun Gothic",sans-serif';const text=(PLAN.find(p=>p.id===c.id)?.short??CELL_SHORT[c.id])+' · '+(halted?'정지':c.state==='BUSY'?'검사 중':'대기'),width=ctx.measureText(text).width+24;ctx.fillStyle='#10232be8';ctx.fillRect(x-width/2,y-14,width,31);ctx.fillStyle='#c2e3df';ctx.fillText(text,x-width/2+12,y+7);}
+  if(robotCamera){ctx.fillStyle='#91efd8';ctx.font='22px sans-serif';ctx.fillText(robotCamera.name+' · 가상 카메라 (실제 영상 아님)',35,105);}
+  if(engine&&showLabels&&!robotCamera)for(const c of PLAN.map(p=>({id:p.id,def:{x:p.x,z:p.z},state:p.nodes.some(id=>engine.cells[id].state==='BUSY')?'BUSY':'IDLE'}))){const p=new THREE.Vector3(c.def.x,3.1,c.def.z).project(camera);if(p.z>1||p.z< -1)continue;const x=dx+(p.x+1)*dw/2,y=dy+(-p.y+1)*dh/2;ctx.font='15px "Malgun Gothic",sans-serif';const text=(PLAN.find(p=>p.id===c.id)?.short??CELL_SHORT[c.id])+' · '+(halted?'정지':c.state==='BUSY'?'검사 중':'대기'),width=ctx.measureText(text).width+24;ctx.fillStyle='#10232be8';ctx.fillRect(x-width/2,y-14,width,31);ctx.fillStyle='#c2e3df';ctx.fillText(text,x-width/2+12,y+7);}
   if(aiState){ctx.fillStyle='#102b30ee';ctx.fillRect(30,h-205,w-60,120);ctx.fillStyle='#8cf0d0';ctx.font='bold 25px sans-serif';ctx.fillText((halted?'보호정지':!running?'일시정지':aiState.held?'작업 보류':aiState.stage)+' · '+aiState.title,55,h-165);ctx.fillStyle='#efffff';ctx.font='24px sans-serif';ctx.fillText(aiState.message,55,h-125);}
   if(engine){ctx.font='18px "Malgun Gothic",sans-serif';ctx.fillStyle='#b3ccd0';ctx.fillText(`반입 ${engine.stats.samples}    최종 판정 ${engine.stats.done}    OK ${engine.stats.ok}    불확실 ${engine.stats.unc}    NG ${engine.stats.ng}`,35,h-25);ctx.fillStyle='#648f9b';ctx.font='14px "Malgun Gothic",sans-serif';ctx.fillText('검사 동작·결과는 시나리오 모사입니다.',1460,h-25);}
 }
