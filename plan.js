@@ -1,3 +1,4 @@
+import {buildSafetyQuadruped} from './safety-quadruped.js';
 import {UT_LENGTH,makeUltrasonicHead,buildUltrasonicStation} from './ultrasonic.js';
 import {processPhase} from './process-v04.js';
 import {scanStage,visionRange} from './product-policy.js';
@@ -89,7 +90,7 @@ export class PlanScene{
   label(this.root,'공장 전역 순찰 · 개념 배치',15,.2,8);
   this.groundPatrol=route(this.root,[[3,.12,6],[3,.12,-35],[28,.12,-35],[64,.12,-35],[64,.12,9],[28,.12,9],[28,.12,-17],[16,.12,-17],[16,.12,6]],0xf1bd5a);
   this.airPatrol=route(this.root,[[6,6,4],[6,6,-30],[24,6,-30],[60,6,-25],[60,6,-8],[44,6,5],[24,6,5],[24,6,-12],[12,6,-12]],0x74d9f2);
-  this.dog=new T.Group();this.root.add(this.dog);box(this.dog,1.1,.4,.55,0,.8,0,orange);box(this.dog,.3,.3,.4,.65,.85,0,dark);this.legs=[];for(const x of [-.4,.4])for(const z of [-.3,.3]){const leg=new T.Group();leg.position.set(x,.7,z);this.dog.add(leg);box(leg,.11,.65,.11,0,-.3,0,metal);this.legs.push(leg);}label(this.dog,'4족 로봇 · 공장 순찰',0,1.5,0);
+  this.dog=new T.Group();this.root.add(this.dog);this.safetyDog=buildSafetyQuadruped(this.dog);this.legs=[];label(this.dog,'현대차그룹 · Spot 기반 안전 로봇',0,1.85,0);
   this.drone=new T.Group();this.root.add(this.drone);box(this.drone,.6,.2,.5,0,0,0,white);this.rotors=[];for(const x of [-.6,.6])for(const z of [-.6,.6]){segment(this.drone,new T.Vector3(),new T.Vector3(x,0,z),.05,dark);const rotor=box(this.drone,.65,.025,.08,x,.12,z,metal);this.rotors.push(rotor);}box(this.drone,.16,.2,.16,0,-.2,0,blue);label(this.drone,'드론 · 공장 상공 점검',0,.7,0);this.pdfCells=buildPDFCells(this.root,engine,this);
  }
  update(){const t=this.engine.time;if(t<this.lastReport)this.lastReport=0;if(t-this.lastReport>=45){this.lastReport=t;this.engine.emit('info','공장 순찰 · 점검 데이터 전달',{obs:'4족 순찰·드론 비전 점검 (모사)',dec:'QMS·OCS 상태 통합',act:'설비 상태·점검 영상 이력 연결'});this.engine.spawnPacket(this.dog.position.clone().add(new T.Vector3(0,1,0)));this.engine.spawnPacket(this.drone.position.clone());}for(const c of this.engine.order){c.g.visible=false;const v=this.visuals[c.id],busy=c.state==='BUSY',p=c.visualProgress??c.progress;const on=busy&&p>=.16&&p<=.84;v.motionText=busy?(p<.16?'반입 · 지그 안착':p>.84?'검사 완료 · 반출':'지그 고정 · 기준 정렬'):'대기';v.trace?.update(null);if(v.referenceVision&&c.item)setVisionProduct(v,c.item.product);if(v.referenceVision&&c.aiDemo)v.sample.position.copy(v.sampleHome).x+=c.aiDemo.fixtureX||0;if(v.sample){if(c.item)replaceProduct(v.sample,c.item.product);v.sample.visible=on;if(c.occ?.pm)c.occ.pm.visible=!(busy&&p>.02&&p<.98);}
@@ -100,7 +101,7 @@ export class PlanScene{
    if(transfer)applyTransfer(c,v);
    if(c.fault)v.motionText='설비 이상 · 검사 중지';
   }
-  patrol(this.dog,this.groundPatrol,t,.8);this.legs.forEach((l,i)=>l.rotation.z=Math.sin(t*3+i*Math.PI)*.4);patrol(this.drone,this.airPatrol,t,1.3);this.rotors.forEach(r=>r.rotation.y=t*22);this.pdfCells.update(t);for(const c of this.engine.order){const phase=processPhase(c);if(phase)this.visuals[c.id].motionText=phase;}
+  patrol(this.dog,this.groundPatrol,t,.8);this.safetyDog.update(t);patrol(this.drone,this.airPatrol,t,1.3);this.rotors.forEach(r=>r.rotation.y=t*22);this.pdfCells.update(t);for(const c of this.engine.order){const phase=processPhase(c);if(phase)this.visuals[c.id].motionText=phase;}
  }
  setLabels(on){this.root.traverse(o=>{if(o.isCSS2DObject)o.visible=on;});}
 }

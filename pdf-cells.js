@@ -34,7 +34,6 @@ export function buildPDFCells(root,engine,plan){
  const dg=group(root,34,3);box(dg,2.5,.12,2,0,.06,0,gray);box(dg,.25,1.1,2,-1.1,.6,0,white);text(dg,'4족 로봇 도킹 · 충전',0,1.6,0);
  const dd=group(root,44,3);box(dd,2.4,.3,2.4,0,.15,0,gray);box(dd,1.8,.08,1.8,0,.35,0,blue);text(dd,'드론 도킹 · 충전',0,1.1,0);
  // Sensor modules on the representative mobile robots.
- box(plan.dog,.25,.2,.3,0,1.15,0,black);box(plan.dog,.12,.12,.12,.78,.9,.12,blue);box(plan.dog,.12,.12,.12,.78,.9,-.12,gold);text(plan.dog,'RGB·Depth / LiDAR / 열화상·환경',0,1.85,0);
  box(plan.drone,.4,.3,.35,0,-.3,0,black);for(const x of [-.12,.12])box(plan.drone,.08,.08,.05,x,-.3,.2,blue);text(plan.drone,'원키트 RGB·Depth·열화상',0,1,0);
  const console=plan.visuals.JUDGE.g;for(const x of [-2.2,-1.1,1.1,2.2])rack(console,x,3);for(const x of [-1.7,0,1.7]){box(console,1.5,.1,.7,x,1.1,-.5,white);box(console,1.1,.6,.08,x,1.55,-.8,blue);}const dashboard=text(console,'QMS · 데이터 허브 · AI 분석',0,4.6,-3.7);
  text(console,'Process Simulation · Opcenter · Amesim',0,.3,4);text(console,'Testlab · Heeds · Insight Hub · 역설계',0,.3,4.5);
