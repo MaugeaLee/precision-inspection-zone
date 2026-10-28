@@ -29,3 +29,5 @@
 #ai-integrated{margin:14px 0;padding:14px;background:#163d39;border:1px solid #377465;border-radius:10px}#ai-integrated strong{color:#a2f6db;font-size:14px}#ai-integrated div{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;font-size:11px}#ai-integrated b{color:#9ef5d2}#ai-integrated p{font-size:13px;line-height:1.6;margin:10px 0}#ai-integrated small{display:block;font-size:11px;line-height:1.5;margin-top:8px;color:#a6c6c0}
 
 #robot-camera-banner{position:absolute;left:16px;top:82px;z-index:8;background:#102d35ed;padding:12px;border:1px solid #73d9c3;border-radius:9px;display:flex;flex-direction:column;gap:8px;max-width:320px}#robot-camera-banner[hidden]{display:none}#robot-camera-banner span{font-size:11px;color:#b2cbd1}#robot-camera-select{max-width:180px}.view-tools{flex-wrap:wrap}
+
+#robot-camera-banner{left:auto;right:16px;top:82px;width:min(344px,calc(100% - 32px));max-width:none;box-sizing:border-box;box-shadow:0 12px 32px #0008}#robot-camera-screen{display:block;width:100%;height:auto;aspect-ratio:16/9;border-radius:5px;background:#20323e}#robot-camera-name{font-size:12px}
