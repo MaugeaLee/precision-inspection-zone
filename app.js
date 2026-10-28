@@ -24,8 +24,23 @@ const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>'
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
 let planScene,aiState=null,aiFocusSample=null,robotCameras,robotCamera=null;
 const robotView=new THREE.PerspectiveCamera(65,16/9,.015,220);
-function selectRobotCamera(e){robotCamera=e;$('robot-camera-select').value=e.id;$('robot-camera-banner').hidden=false;$('robot-camera-name').textContent=e.name+' · 가상 카메라';$('focus-card').hidden=true;}
+function selectRobotCamera(e){robotCamera=e;$('robot-camera-select').value=e.id;$('robot-camera-banner').hidden=false;$('robot-camera-name').textContent=e.name+' · 가상 카메라';$('focus-card').hidden=true;updateRobotStatus();}
 function leaveRobotCamera(){robotCamera=null;$('robot-camera-banner').hidden=true;$('robot-camera-select').value='';}
+function updateRobotStatus(){
+  if(!robotCamera)return;
+  const e=robotCamera,stop=halted?'보호정지':!running?'일시정지':null;
+  let fields=[],detail='';
+  if(e.cell){
+    const c=engine.cells[e.cell],fault=engine.equipment[e.cell].state,r=e.robot;
+    const state=stop||(c.processHold?'공정 보류':fault==='DOWN'?'설비 이상':fault!=='IDLE'?'점검 중':c.state==='BUSY'?'작업 중':c.state==='DONE'?'인계 대기':'대기');
+    const action=r?(r.carry?'검사물 이송':r.motion?r.motion.phase:r.cobot?'검사 순서 대기':c.state==='BUSY'?'투입·회수 순서 대기':'대기'):'3D 스캔 공정';
+    fields=[['현재 상태',state],['로봇 동작',stop||action],['소속 공정 진행',Math.round(c.progress*100)+'%'],['공정 완료',c.done+'회'],['공정 기준 사이클',Math.round(c.def.cycle*engine.mul)+'s'],['검사물',c.item?PRODUCTS[c.item.product][1]:'없음']];
+    detail=(e.equipment?'ScanBox '+e.equipment:names[e.cell])+' · '+(planScene.visuals[e.cell]?.motionText||'대기');
+  }else if(e.carrier!==undefined){
+    const c=engine.carriers[e.carrier];fields=[['현재 상태',stop||(c.trafficWaiting?'통로 예약 대기':vehicleState[c.state]||c.state)],['운반 검사물',c.item?PRODUCTS[c.item.product][1]:'없음']];detail=c.uid+' · 검사물 이송';
+  }else{fields=[['현재 상태',stop||'순찰·점검 중'],['작업 영역','공장 전역']];detail=e.name.includes('드론')?'상공 점검 · 하방 관찰':'지상 순찰 · 전방 관찰';}
+  $('robot-camera-status').innerHTML='<div class="detail-grid">'+fields.map(([label,value])=>'<div><span>'+escape(label)+'</span><b>'+escape(value)+'</b></div>').join('')+'</div><p class="motion-step">'+escape(detail)+'</p>';
+}
 function renderRobotPreview(){
   if(!robotCamera)return;
   scene.updateMatrixWorld(true);const pose=robotCamera.pose();robotView.position.copy(pose.position);
@@ -164,7 +179,7 @@ function updateUI(){
   for(const p of PLAN){const el=$('plan-state-'+p.id),cs=p.nodes.map(id=>engine.cells[id]);el.textContent=halted?'보호정지':!running?'일시정지':!cs.length?'순찰·점검 중':cs.some(c=>c.fault)?'설비 점검':cs.some(c=>c.state==='BUSY')?'검사·작업 중':'대기';}
   $('amr-list').innerHTML=engine.carriers.map(c=>`<div class="amr-item"><span class="amr-icon">▱</span><div><strong>${c.uid}</strong><p class="${c.state==='park'?'':'moving'}">${halted?'보호정지':c.trafficWaiting?'통로 예약 대기':vehicleState[c.state]??c.state}${c.item?' · '+escape(PRODUCTS[c.item.product][1]):''}</p></div></div>`).join('');
   const box=$('ai-integrated');box.querySelector('strong').textContent=aiState?aiState.title+' · '+aiState.sample:'피지컬AI · 상태에 따라 행동 조정';box.querySelector('[data-ai-stage]').textContent=halted?'보호정지':!running?'일시정지':aiState?.held?'작업 보류':aiState?.stage||'준비';box.querySelector('[data-ai-message]').textContent=aiState?aiState.message:'도어·후드 비전검사 시 자세 보정 → 재안착 → 취득 불량 재검사를 같은 공정에서 보여줍니다.';box.querySelector('[data-ai-compare]').textContent=aiState?aiState.compare:'AMR 반입 → 로봇 투입 → 상태 확인·보정 → 검사·회수';
-  engine.updateLabels();if(halted)for(const c of engine.order)c.chip.textContent='보호정지';updateFocus();
+  updateRobotStatus();engine.updateLabels();if(halted)for(const c of engine.order)c.chip.textContent='보호정지';updateFocus();
 }
 function resize(){const {width,height}=viewport.getBoundingClientRect();if(!width||!height)return;renderer.setSize(width,height);labelRenderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}
 function frame(now){
