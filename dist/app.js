@@ -1,3 +1,4 @@
+import {createIncidentTracker} from './ai-incidents.js';
 import {createRobotCameras,hideCameraBody} from './robot-cameras.js';
 import {syncIntegratedAI} from './integrated-ai.js';
 import {SOURCE_BAYS} from './source-bays.js';
@@ -22,10 +23,24 @@ import {InspectionSession,PRODUCTS,ROUTES,CELL_SHORT,RESULT,vehicleState} from '
 const $=id=>document.getElementById(id);
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
+const incidentTracker=createIncidentTracker();let incidentState=null,incidentMarker;
 let planScene,aiState=null,aiFocusSample=null,robotCameras,robotCamera=null;
 const robotView=new THREE.PerspectiveCamera(65,16/9,.015,220);
 function selectRobotCamera(e){robotCamera=e;$('robot-camera-select').value=e.id;$('robot-camera-banner').hidden=false;$('robot-camera-name').textContent=e.name+' · 가상 카메라';$('focus-card').hidden=true;updateRobotStatus();}
 function leaveRobotCamera(){robotCamera=null;$('robot-camera-banner').hidden=true;$('robot-camera-select').value='';}
+function updateIncidentMarker(){
+ if(!incidentMarker){incidentMarker=new THREE.Mesh(new THREE.TorusGeometry(2.5,.045,8,64),new THREE.MeshBasicMaterial({color:0xffae54,transparent:true,opacity:.85}));incidentMarker.rotation.x=-Math.PI/2;scene.add(incidentMarker);}
+ const a=incidentState?.active;incidentMarker.visible=!!a;
+ if(a){const p=planScene.visuals.VIS.g.position;incidentMarker.position.set(p.x,.1,p.z-1.1);incidentMarker.material.color.setHex(a.phase===3?0x63e4b7:0xffae54);incidentMarker.scale.setScalar(1+.035*Math.sin(engine.time*4));}
+}
+function updateIncidentPanel(){
+ const state=incidentState,a=state?.active,box=$('ai-incident');
+ box.dataset.phase=a?(a.phase===3?'resolved':'active'):'idle';
+ $('incident-title').textContent=a?a.title:state?.last?'정상 작업 계속':'문제 발생·AI 복구 시연';
+ $('incident-summary').textContent=a?((halted||!running||state.held)?'작업 정지/보류 · 복구 동작도 대기합니다.':a.steps[a.phase]):state?.last?state.last.result+' · 다음 공정 진행':'도어·후드 검사 중 안착 오차와 취득 불량이 차례로 발생합니다.';
+ $('incident-steps').innerHTML=['감지','판단','복구','확인'].map((x,i)=>'<span class="'+(a&&i===a.phase?'current':a&&i<a.phase?'done':'')+'">'+x+'</span>').join('');
+ $('incident-count').textContent='복구 확인 '+(state?.count||0)+'건'+(a?' · '+a.sample:'');
+}
 function updateRobotStatus(){
   if(!robotCamera)return;
   const e=robotCamera,stop=halted?'보호정지':!running?'일시정지':null;
@@ -35,10 +50,11 @@ function updateRobotStatus(){
     const state=stop||(c.processHold?'공정 보류':fault==='DOWN'?'설비 이상':fault!=='IDLE'?'점검 중':c.state==='BUSY'?'작업 중':c.state==='DONE'?'인계 대기':'대기');
     const action=r?(r.carry?'검사물 이송':r.motion?r.motion.phase:r.cobot?'검사 순서 대기':c.state==='BUSY'?'투입·회수 순서 대기':'대기'):'3D 스캔 공정';
     fields=[['현재 상태',state],['로봇 동작',stop||action],['소속 공정 진행',Math.round(c.progress*100)+'%'],['공정 완료',c.done+'회'],['공정 기준 사이클',Math.round(c.def.cycle*engine.mul)+'s'],['검사물',c.item?PRODUCTS[c.item.product][1]:'없음']];
-    detail=(e.equipment?'ScanBox '+e.equipment:names[e.cell])+' · '+(planScene.visuals[e.cell]?.motionText||'대기');
+    detail=(c.aiIncident?'AI '+['문제 감지','복구 판단','복구 중','복구 확인'][c.aiIncident.phase]+' · ':'')+(e.equipment?'ScanBox '+e.equipment:names[e.cell])+' · '+(planScene.visuals[e.cell]?.motionText||'대기');
   }else if(e.carrier!==undefined){
     const c=engine.carriers[e.carrier];fields=[['현재 상태',stop||(c.trafficWaiting?'통로 예약 대기':vehicleState[c.state]||c.state)],['운반 검사물',c.item?PRODUCTS[c.item.product][1]:'없음']];detail=c.uid+' · 검사물 이송';
   }else{fields=[['현재 상태',stop||'순찰·점검 중'],['작업 영역','공장 전역']];detail=e.name.includes('드론')?'상공 점검 · 하방 관찰':'지상 순찰 · 전방 관찰';}
+  if(e.cell==='VIS'&&incidentState?.active)detail+=' · AI 대응: '+incidentState.active.steps[incidentState.active.phase];
   $('robot-camera-status').innerHTML='<div class="detail-grid">'+fields.map(([label,value])=>'<div><span>'+escape(label)+'</span><b>'+escape(value)+'</b></div>').join('')+'</div><p class="motion-step">'+escape(detail)+'</p>';
 }
 function renderRobotPreview(){
@@ -144,7 +160,7 @@ function bindControls(){
 }
 function restart(){
   leaveRobotCamera();$('overview').click();
-  aiFocusSample=null;aiState=null;engine.restart(mode);engine.wallG.visible=false;for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];for(const p of c.plates)p.visible=false;}
+  incidentTracker.reset();incidentState=null;aiFocusSample=null;aiState=null;engine.restart(mode);engine.wallG.visible=false;for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];for(const p of c.plates)p.visible=false;}
   running=true;halted=false;$('stop').textContent='■ 보호정지';$('stop').classList.remove('engaged');renderPlay();seedDemo();updateUI();
 }
 function seedDemo(){engine.enqueue('door','ok');engine.enqueue('hblock','uncertain');engine.enqueue('eaxle','ng');}
@@ -179,7 +195,7 @@ function updateUI(){
   for(const p of PLAN){const el=$('plan-state-'+p.id),cs=p.nodes.map(id=>engine.cells[id]);el.textContent=halted?'보호정지':!running?'일시정지':!cs.length?'순찰·점검 중':cs.some(c=>c.fault)?'설비 점검':cs.some(c=>c.state==='BUSY')?'검사·작업 중':'대기';}
   $('amr-list').innerHTML=engine.carriers.map(c=>`<div class="amr-item"><span class="amr-icon">▱</span><div><strong>${c.uid}</strong><p class="${c.state==='park'?'':'moving'}">${halted?'보호정지':c.trafficWaiting?'통로 예약 대기':vehicleState[c.state]??c.state}${c.item?' · '+escape(PRODUCTS[c.item.product][1]):''}</p></div></div>`).join('');
   const box=$('ai-integrated');box.querySelector('strong').textContent=aiState?aiState.title+' · '+aiState.sample:'피지컬AI · 상태에 따라 행동 조정';box.querySelector('[data-ai-stage]').textContent=halted?'보호정지':!running?'일시정지':aiState?.held?'작업 보류':aiState?.stage||'준비';box.querySelector('[data-ai-message]').textContent=aiState?aiState.message:'도어·후드 비전검사 시 자세 보정 → 재안착 → 취득 불량 재검사를 같은 공정에서 보여줍니다.';box.querySelector('[data-ai-compare]').textContent=aiState?aiState.compare:'AMR 반입 → 로봇 투입 → 상태 확인·보정 → 검사·회수';
-  updateRobotStatus();engine.updateLabels();if(halted)for(const c of engine.order)c.chip.textContent='보호정지';updateFocus();
+  updateIncidentPanel();updateRobotStatus();engine.updateLabels();if(halted)for(const c of engine.order)c.chip.textContent='보호정지';updateFocus();
 }
 function resize(){const {width,height}=viewport.getBoundingClientRect();if(!width||!height)return;renderer.setSize(width,height);labelRenderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}
 function frame(now){
@@ -187,7 +203,7 @@ function frame(now){
   if(running&&!halted){let remaining=real*speed;while(remaining>0){const dt=Math.min(remaining,.08);engine.tick(dt,false,$('auto').checked);remaining-=dt;}}
   else engine.halted=halted;
   // Keep every mechanical animation frozen during pause/protective stop.
-  if(running&&!halted)engine.update(real,true,speed);aiState=syncIntegratedAI(engine);planScene.update();if(aiState&&aiFocusSample!==aiState.sample){aiFocusSample=aiState.sample;if(!robotCamera&&(!selected||selected==='VIS'||selected==='A-4-1'))focusCell('VIS');}engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
+  if(running&&!halted)engine.update(real,true,speed);aiState=syncIntegratedAI(engine);incidentState=incidentTracker.update(engine,aiState);planScene.update();updateIncidentMarker();if(aiState&&aiFocusSample!==aiState.sample){aiFocusSample=aiState.sample;if(!robotCamera&&(!selected||selected==='VIS'||selected==='A-4-1'))focusCell('VIS');}engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
   if(cameraGoal){camera.position.lerp(cameraGoal.position,.07);controls.target.lerp(cameraGoal.target,.07);if(camera.position.distanceTo(cameraGoal.position)<.02)cameraGoal=null;}
   robotCameras.refresh();controls.update();renderRobotPreview();renderer.render(scene,camera);arrangeLabels();labelRenderer.domElement.style.visibility='visible';labelRenderer.render(scene,camera);
   uiTimer+=real;if(uiTimer>.2){uiTimer=0;updateUI();}

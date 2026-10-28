@@ -30,3 +30,7 @@ References: https://scanmaster-irt.com/wp-content/uploads/2023/06/ScanMaster-UTX
 
 ## Robot virtual cameras
 Robot body/label selection and the camera selector enter a following virtual camera. Covers inspection/handling arms, ScanBox arms, patrol dog/drone and AMRs. Exit, Escape and overview return to orbit controls; reset rebinds AMR references. Selected robot body meshes are hidden only for rendering, preserving the carried product. Camera captions are recorded. These are synthesized viewpoints, not installed RGB/ultrasonic hardware video.
+
+## Automatic problem and recovery demonstration
+Door/hood surface inspection now highlights two existing physical recovery sequences: fixture misalignment and low-quality visual acquisition. The incident panel and robot camera status show detection, decision, recovery and verification; floor marker identifies the affected vision booth. Completion is counted only after the verification interval ends. Event logging catches skipped UI frames at high playback speeds and avoids duplicates. Protective stops and process holds suspend recovery. This is a scripted demonstration, not live AI inference or an emergency safety controller.
+
