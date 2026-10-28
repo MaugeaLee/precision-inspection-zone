@@ -1,3 +1,4 @@
+import {createOcsWall} from './ocs-wall.js';
 import {createPatrolViews} from './patrol-views.js';
 import {createIncidentTracker} from './ai-incidents.js';
 import {createRobotCameras,hideCameraBody} from './robot-cameras.js';
@@ -25,7 +26,7 @@ const $=id=>document.getElementById(id);
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
 const incidentTracker=createIncidentTracker();let incidentState=null,incidentMarker;
-let patrolViews,planScene,aiState=null,aiFocusSample=null,robotCameras,robotCamera=null;
+let patrolViews,planScene,aiState=null,aiFocusSample=null,robotCameras,robotCamera=null,ocsWall;
 const robotView=new THREE.PerspectiveCamera(65,16/9,.015,220);
 function selectRobotCamera(e){robotCamera=e;$('robot-camera-select').value=e.id;$('robot-camera-banner').hidden=false;$('robot-camera-name').textContent=e.name+' · 가상 카메라';$('focus-card').hidden=true;updateRobotStatus();}
 function leaveRobotCamera(){robotCamera=null;$('robot-camera-banner').hidden=true;$('robot-camera-select').value='';}
@@ -95,7 +96,7 @@ async function init(){
     catch(e){console.warn('기본 도형 모델로 전환합니다.',e);RENDER.loaded=false;toast('기본 장비 모델로 실행합니다.');}
     await loadShapes();
     engine=new InspectionSession(scene);
-    planScene=new PlanScene(engine,scene,focusPlan);planScene.onEquipmentFocus=focusCell;robotCameras=createRobotCameras(planScene,engine,selectRobotCamera);patrolViews=createPatrolViews(scene,robotCameras.entries);for(const e of robotCameras.entries){const o=document.createElement('option');o.value=e.id;o.textContent=e.name;$('robot-camera-select').append(o);}$('robot-camera-select').onchange=()=>{const e=robotCameras.entries.find(e=>e.id===$('robot-camera-select').value);if(e)selectRobotCamera(e);else leaveRobotCamera();};$('robot-camera-exit').onclick=leaveRobotCamera;
+    planScene=new PlanScene(engine,scene,focusPlan);planScene.onEquipmentFocus=focusCell;robotCameras=createRobotCameras(planScene,engine,selectRobotCamera);patrolViews=createPatrolViews(scene,robotCameras.entries);ocsWall=createOcsWall(renderer,scene,planScene,robotCameras,patrolViews);for(const e of robotCameras.entries){const o=document.createElement('option');o.value=e.id;o.textContent=e.name;$('robot-camera-select').append(o);}$('robot-camera-select').onchange=()=>{const e=robotCameras.entries.find(e=>e.id===$('robot-camera-select').value);if(e)selectRobotCamera(e);else leaveRobotCamera();};$('robot-camera-exit').onclick=leaveRobotCamera;
     engine.onEvent(()=>renderLog());
     makeFloor();contactShadows(scene,[...engine.order.map(c=>[c.def.x,c.def.z-3.7,7,6]),[34,-14,7,6],[42,-14,6,5],[60,-14,7,6]]);makeSourceBays();makeCellList();bindControls();makeRoute();
     for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];c.el.addEventListener('pointerdown',e=>{e.stopPropagation();focusCell(c.id);});for(const p of c.plates)p.visible=false;}
@@ -129,7 +130,7 @@ function makeCellList(){
   for(const [caption,id,x,z,d] of [['비전검사 배치','A-4-1',35,-27,14],['정밀측정 배치','A-4-1',48,-27,20],['3D 스캔 배치','A-4-2',38,-14,22],['비파괴검사 배치','A-4-2',55,-13,21]]){const b=document.createElement('button');b.textContent=caption;links.append(b);b.onclick=()=>{focusPlan(id);layoutView=true;cameraGoal={target:new THREE.Vector3(x,.8,z),position:new THREE.Vector3(x+d*.35,d*.7,z+d)};if(caption==='비전검사 배치'){cameraGoal={target:new THREE.Vector3(35,1.1,-27.6),position:new THREE.Vector3(39,4.5,-18)};}$('focus-card').hidden=true;};}
 }
 let layoutView=false;
-function focusPlan(id){leaveRobotCamera();layoutView=false;const p=PLAN.find(p=>p.id===id),distance=Math.max(12,Math.max(p.w,p.d)*1.05);selected=id;selectedEquipment=null;planScene.focus=id;cameraGoal={target:new THREE.Vector3(p.x,.7,p.z),position:new THREE.Vector3(p.x+distance,distance,p.z+distance)};if(id==='A-4-3'){const at=planScene.dog.getWorldPosition(new THREE.Vector3());cameraGoal={target:at.clone().add(new THREE.Vector3(0,.85,0)),position:at.clone().add(new THREE.Vector3(3.5,2.5,4).applyQuaternion(planScene.dog.getWorldQuaternion(new THREE.Quaternion())))};}updateFocus();}
+function focusPlan(id){leaveRobotCamera();layoutView=false;const p=PLAN.find(p=>p.id===id),distance=Math.max(12,Math.max(p.w,p.d)*1.05);selected=id;selectedEquipment=null;planScene.focus=id;cameraGoal={target:new THREE.Vector3(p.x,.7,p.z),position:new THREE.Vector3(p.x+distance,distance,p.z+distance)};if(id==='A-4-3'){const at=planScene.dog.getWorldPosition(new THREE.Vector3());cameraGoal={target:at.clone().add(new THREE.Vector3(0,.85,0)),position:at.clone().add(new THREE.Vector3(3.5,2.5,4).applyQuaternion(planScene.dog.getWorldQuaternion(new THREE.Quaternion())))};}if(id==='A-4-5')cameraGoal={target:new THREE.Vector3(57,2.15,-3.7),position:new THREE.Vector3(57,2.55,2.1)};updateFocus();}
 function bindControls(){
   document.querySelector('.scenario-panel').insertAdjacentHTML('afterend',recipeControls+`<section class="recipe-v04"><strong>공정 예외 시연</strong><select id="exception-kind" aria-label="공정 예외">${Object.entries(EXCEPTIONS).map(([id,v])=>`<option value="${id}">${v[0]}</option>`).join('')}</select><button id="process-hold">선택 공정 보류</button><button id="process-resume">조치 확인 · 재개/재검사</button><small>검사 중인 장비를 선택한 뒤 적용합니다. NG는 리워크 조치 확인을 모사한 후 재검사합니다.</small></section>`);
   loadRecipe($('product').value);document.querySelectorAll('.recipe-v04 select,.recipe-v04 input').forEach(e=>e.onchange=makeRoute);
@@ -169,6 +170,7 @@ function renderPlay(){$('play').textContent=running?'Ⅱ 일시정지':'▶ 재�
 function focusCell(id,equipment=null){leaveRobotCamera();layoutView=false;
   if(!engine.cells[id])return;selected=id;selectedEquipment=equipment==='UT'?'UT':planScene.scanBoxes?.[equipment]?equipment:null;planScene.focus=id;const c=engine.cells[id];
   cameraGoal={target:new THREE.Vector3(c.def.x,1,c.def.z-3.5),position:new THREE.Vector3(c.def.x+7.8,6.3,c.def.z+4)};
+  if(id==='JUDGE')cameraGoal={target:new THREE.Vector3(57,2.15,-3.7),position:new THREE.Vector3(57,2.55,2.1)};
   if(id==='VIS'){const at=planScene.visuals.VIS.g.position;cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.1,-1.1)),position:at.clone().add(new THREE.Vector3(3.8,4,8))};}
   if(selectedEquipment==='UT'){const at=planScene.visuals.SCAN.g.position;cameraGoal={target:at.clone().add(new THREE.Vector3(.3,1.2,-1.6)),position:at.clone().add(new THREE.Vector3(3.5,4,4))};}else if(selectedEquipment){const at=planScene.scanBoxes[selectedEquipment].g.getWorldPosition(new THREE.Vector3());cameraGoal={target:at.clone().add(new THREE.Vector3(0,1.5,0)),position:at.clone().add(selectedEquipment==='8160'?new THREE.Vector3(10,9,15):new THREE.Vector3(6,6,9))};}else if(id==='SCAN'){cameraGoal={target:new THREE.Vector3(47,1,-14),position:new THREE.Vector3(62,19,13)};}
   document.querySelectorAll('[data-cell]').forEach(b=>b.classList.toggle('active',b.dataset.cell===id&&(b.dataset.equipment||null)===selectedEquipment));updateFocus();
@@ -206,7 +208,7 @@ function frame(now){
   // Keep every mechanical animation frozen during pause/protective stop.
   if(running&&!halted)engine.update(real,true,speed);aiState=syncIntegratedAI(engine);incidentState=incidentTracker.update(engine,aiState);planScene.update();updateIncidentMarker();if(aiState&&aiFocusSample!==aiState.sample){aiFocusSample=aiState.sample;if(!robotCamera&&(!selected||selected==='VIS'||selected==='A-4-1'))focusCell('VIS');}engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
   if(cameraGoal){camera.position.lerp(cameraGoal.position,.07);controls.target.lerp(cameraGoal.target,.07);if(camera.position.distanceTo(cameraGoal.position)<.02)cameraGoal=null;}
-  robotCameras.refresh();patrolViews.update();controls.update();renderRobotPreview();renderer.render(scene,camera);arrangeLabels();labelRenderer.domElement.style.visibility='visible';labelRenderer.render(scene,camera);
+  robotCameras.refresh();patrolViews.update();ocsWall?.update();controls.update();renderRobotPreview();renderer.render(scene,camera);arrangeLabels();labelRenderer.domElement.style.visibility='visible';labelRenderer.render(scene,camera);
   uiTimer+=real;if(uiTimer>.2){uiTimer=0;updateUI();}
   if(recorder?.state==='recording')drawRecording();requestAnimationFrame(frame);
 }
@@ -252,7 +254,7 @@ function showPDFCells(){
 function showOCS(){
  const m=planScene.monitor,s=engine.summary();
  const eventRow=(name,e)=>`<tr><td>${name}</td><td>${e?escape(e.type):'수집 대기'}</td><td>${e?`(${e.x}, ${e.z})`:'—'}</td><td>${e?time(e.time):'—'}</td><td>현장 확인 요청 · 모사</td></tr>`;
- openModal('통합 OCS · QMS 데이터 통합',`<p>시뮬레이션 ${time(engine.time)} 기준 스냅샷 · 상용 소프트웨어 연결 없음</p><div class="ocs-flow">검사·측정 → 데이터 허브 → QMS 판정 → 원인 후보 검토 → 재측정·리워크 권고 → 선행공정 환류 요청</div><h3>제품 ID 기반 품질 이력</h3><p>최종 판정 ${s.done}건 · OK ${s.ok}건 · NG ${s.ng}건 · 재측정 요청 ${s.unc}건</p><table><tr><th>제품 ID</th><th>제품</th><th>판정 이력 (중간 포함)</th><th>재측정</th></tr>${engine.records.slice(-8).reverse().map(r=>`<tr><td>${escape(r.product_id)}</td><td>${escape(r.product)}</td><td>${r.result}</td><td>${r.remeasured?'수행':'없음'}</td></tr>`).join('')||'<tr><td colspan="4">아직 최종 판정 없음</td></tr>'}</table><h3>지상·상부 모니터링 → OCS</h3><table><tr><th>구분</th><th>이벤트</th><th>공장 좌표 x,z</th><th>시각</th><th>조치</th></tr>${eventRow('4족 로봇',m.ground)}${eventRow('드론',m.air)}</table><h3>판정·환류 정책</h3><p>OK: 반출 / 불확실: 해당 공정 재검사 → 추가검사/보류 검토 / NG: 보류·리워크 검토·선행공정 보정 요청. 불량 위치·원인 후보·판정 신뢰도는 실제 분석 데이터가 없어 수치로 생성하지 않습니다.</p><h3>구성 소프트웨어</h3><p>역설계 · Process Simulation · Opcenter · Amesim · Testlab · Heeds · Insight Hub</p><p>로봇 동작·검사 경로 검토, 제조운영 연계, 모델링·시험 분석, 최적화 및 데이터 허브의 역할을 나타냅니다.</p>`);
+ openModal('통합 OCS · QMS 데이터 통합',`<p>시뮬레이션 ${time(engine.time)} 기준 스냅샷 · 상용 소프트웨어 연결 없음</p><p>관제월 3면: 드론 하방 가상 카메라 · 4족 전방 가상 카메라 · 검사 에셋 CCTV 슬라이스 송출</p><div class="ocs-flow">검사·측정 → 데이터 허브 → QMS 판정 → 원인 후보 검토 → 재측정·리워크 권고 → 선행공정 환류 요청</div><h3>제품 ID 기반 품질 이력</h3><p>최종 판정 ${s.done}건 · OK ${s.ok}건 · NG ${s.ng}건 · 재측정 요청 ${s.unc}건</p><table><tr><th>제품 ID</th><th>제품</th><th>판정 이력 (중간 포함)</th><th>재측정</th></tr>${engine.records.slice(-8).reverse().map(r=>`<tr><td>${escape(r.product_id)}</td><td>${escape(r.product)}</td><td>${r.result}</td><td>${r.remeasured?'수행':'없음'}</td></tr>`).join('')||'<tr><td colspan="4">아직 최종 판정 없음</td></tr>'}</table><h3>지상·상부 모니터링 → OCS</h3><table><tr><th>구분</th><th>이벤트</th><th>공장 좌표 x,z</th><th>시각</th><th>조치</th></tr>${eventRow('4족 로봇',m.ground)}${eventRow('드론',m.air)}</table><h3>판정·환류 정책</h3><p>OK: 반출 / 불확실: 해당 공정 재검사 → 추가검사/보류 검토 / NG: 보류·리워크 검토·선행공정 보정 요청. 불량 위치·원인 후보·판정 신뢰도는 실제 분석 데이터가 없어 수치로 생성하지 않습니다.</p><h3>구성 소프트웨어</h3><p>역설계 · Process Simulation · Opcenter · Amesim · Testlab · Heeds · Insight Hub</p><p>로봇 동작·검사 경로 검토, 제조운영 연계, 모델링·시험 분석, 최적화 및 데이터 허브의 역할을 나타냅니다.</p>`);
 }
 
 function sunQuality(high){scene.traverse(o=>{if(o.isDirectionalLight&&o.castShadow){const size=high?4096:2048;o.shadow.mapSize.set(size,size);if(o.shadow.map){o.shadow.map.dispose();o.shadow.map=null;}o.shadow.needsUpdate=true;}});}

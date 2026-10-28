@@ -19,7 +19,7 @@ export const PLAN=[
  {id:'A-4-2',name:'3D 스캔과 초음파 용접 검사 로봇 Cell',short:'3D·초음파 용접검사',nodes:['SCAN'],x:47,z:-14,w:34,d:11,description:'ATOS ScanBox 8160 / 5130 · ATOS 5X / 5 · 초음파/NDT · 인라인 X-ray · 차폐·안전 인터록'},
  {id:'A-4-3',name:'4족 보행 검사 및 안전 모니터링 로봇 Cell',short:'4족 보행·안전 모니터링',nodes:[],x:34,z:3,w:6,d:7,description:'공장 전역 지상 순찰 · RGB/Depth·LiDAR·열화상·환경 센서 · 장애물·누유·열·접근 이상 → OCS'},
  {id:'A-4-4',name:'원키트 비전 센서 기술 드론 세트 Cell',short:'원키트 비전 드론',nodes:[],x:44,z:3,w:6,d:7,description:'공장 상부·창고·물류 점검 · RGB/Depth/열화상 원키트 · 실내 위치인식 · 도킹/충전 · 적재·이송 이상 → OCS'},
- {id:'A-4-5',name:'AI정밀검사(QMS) 통합 OCS 시뮬레이션 Cell',short:'QMS 통합 OCS',nodes:['JUDGE'],x:57,z:2,w:11,d:12,description:'Cell 1~4 작업지시·장비상태·품질이력 통합 · OK/불확실/NG · 재검사 및 공정 환류 요청'}
+ {id:'A-4-5',name:'AI정밀검사(QMS) 통합 OCS 시뮬레이션 Cell',short:'QMS 통합 OCS',nodes:['JUDGE'],x:57,z:2,w:11,d:12,description:'Cell 1~4 작업지시·장비상태·품질이력 통합 · 관제월 3면(드론 하방·4족 전방·에셋 CCTV 슬라이스) · OK/불확실/NG · 재검사 및 공정 환류 요청'}
 ];
 const mat=c=>new T.MeshStandardMaterial({color:c,roughness:.38,metalness:.22});
 const white=mat(0xe2e8eb),blue=mat(0x176ab4),dark=mat(0x243641),orange=mat(0xe29b22),metal=mat(0x8eabb3);
@@ -83,7 +83,7 @@ export class PlanScene{
    else if(c.id==='MMZ'){Object.assign(v,buildMMZG(g));v.sample=new T.Group();v.sample.position.set(0,.91,-1.5);g.add(v.sample);v.handler=robot(g,0,.55,false);v.robots.push(v.handler);v.trace=makeInspectionTrace(g);label(g,'ZEISS MMZ G · 후드/도어 대형 검사',0,5.4,-1.6);}
    else if(c.id==='OINS'){Object.assign(v,buildOInspect863(g));v.sample=new T.Group();v.sample.position.copy(v.sampleHome);g.add(v.sample);v.handler=robot(g,0,.55,false);v.robots.push(v.handler);v.trace=makeInspectionTrace(g);label(g,'ZEISS O-INSPECT 8/6/3 · 대형 제외 검사',0,3.4,-1.6);}
    else if(c.id==='DOCK'){box(g,2,.08,1.7,0,.04,0,metal);label(g,'공용 반입 · ID 확인',0,1.3,0);}
-   else {box(g,8,.18,.8,0,.09,-3.7,dark);box(g,8,3.2,.18,0,2,-3.7,dark);for(const x of [-2.5,0,2.5])box(g,2.35,2.2,.08,x,2.15,-3.58,blue);label(g,'통합 관제월 · QMS / OCS',0,4,-3.7);}
+   else {box(g,8,.18,.8,0,.09,-3.7,dark);box(g,8,3.2,.18,0,2,-3.7,dark);v.ocsScreens=[-2.5,0,2.5].map(x=>box(g,2.35,2.2,.08,x,2.15,-3.58,dark));label(g,'통합 관제월 · QMS / OCS',0,4,-3.7);}
   }
   // Schematic factory context, outside the inspection zone.
   for(const [name,x,z] of [['유연생산',10,-25],['정밀조립',22,-25],['적응가공',10,-9],['물류·창고',22,-9]]){const g=new T.Group();g.position.set(x,0,z);this.root.add(g);box(g,9,.04,11,0,0,0,mat(0x3b555a));label(g,name,0,.2,-5);for(const dz of [-2.5,2]){box(g,5,1.1,2.2,0,.55,dz,dark);box(g,4.7,.15,2,0,1.2,dz,metal);for(const dx of [-1.5,0,1.5])box(g,.75,.6,.9,dx,1.55,dz,white);}}
