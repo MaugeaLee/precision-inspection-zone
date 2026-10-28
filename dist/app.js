@@ -1,3 +1,4 @@
+import {createPatrolViews} from './patrol-views.js';
 import {createIncidentTracker} from './ai-incidents.js';
 import {createRobotCameras,hideCameraBody} from './robot-cameras.js';
 import {syncIntegratedAI} from './integrated-ai.js';
@@ -24,7 +25,7 @@ const $=id=>document.getElementById(id);
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=t=>[8+Math.floor(t/3600),Math.floor(t/60)%60,Math.floor(t)%60].map(n=>String(n).padStart(2,'0')).join(':');
 const incidentTracker=createIncidentTracker();let incidentState=null,incidentMarker;
-let planScene,aiState=null,aiFocusSample=null,robotCameras,robotCamera=null;
+let patrolViews,planScene,aiState=null,aiFocusSample=null,robotCameras,robotCamera=null;
 const robotView=new THREE.PerspectiveCamera(65,16/9,.015,220);
 function selectRobotCamera(e){robotCamera=e;$('robot-camera-select').value=e.id;$('robot-camera-banner').hidden=false;$('robot-camera-name').textContent=e.name+' · 가상 카메라';$('focus-card').hidden=true;updateRobotStatus();}
 function leaveRobotCamera(){robotCamera=null;$('robot-camera-banner').hidden=true;$('robot-camera-select').value='';}
@@ -62,9 +63,9 @@ function renderRobotPreview(){
   scene.updateMatrixWorld(true);const pose=robotCamera.pose();robotView.position.copy(pose.position);
   const direction=pose.target.clone().sub(pose.position).normalize();robotView.up.set(0,Math.abs(direction.y)>.98?0:1,Math.abs(direction.y)>.98?-1:0);robotView.lookAt(pose.target);
   const canvas=$('robot-camera-screen'),ctx=canvas.getContext('2d'),size=renderer.getSize(new THREE.Vector2()),w=Math.min(320,size.x),h=w*9/16,ratio=renderer.getPixelRatio();
-  const restore=hideCameraBody(robotCamera);
+  const restore=hideCameraBody(robotCamera);patrolViews.group.visible=false;
   try{renderer.setViewport(0,0,w,h);renderer.setScissor(0,0,w,h);renderer.setScissorTest(true);renderer.render(scene,robotView);ctx.drawImage(renderer.domElement,0,renderer.domElement.height-h*ratio,w*ratio,h*ratio,0,0,canvas.width,canvas.height);}
-  finally{restore();renderer.setScissorTest(false);renderer.setViewport(0,0,size.x,size.y);}
+  finally{restore();patrolViews.group.visible=true;renderer.setScissorTest(false);renderer.setViewport(0,0,size.x,size.y);}
 }
 
 let engine,renderer,scene,camera,controls,labelRenderer,selected=null,selectedEquipment=null,running=true,halted=false,speed=1,mode='dark',showLabels=true,showData=true,uiTimer=0,last=performance.now(),cameraGoal=null,routeLine,recorder,recordCanvas,recordContext,recordStart,recordChunks=[],recordStream;
@@ -94,7 +95,7 @@ async function init(){
     catch(e){console.warn('기본 도형 모델로 전환합니다.',e);RENDER.loaded=false;toast('기본 장비 모델로 실행합니다.');}
     await loadShapes();
     engine=new InspectionSession(scene);
-    planScene=new PlanScene(engine,scene,focusPlan);planScene.onEquipmentFocus=focusCell;robotCameras=createRobotCameras(planScene,engine,selectRobotCamera);for(const e of robotCameras.entries){const o=document.createElement('option');o.value=e.id;o.textContent=e.name;$('robot-camera-select').append(o);}$('robot-camera-select').onchange=()=>{const e=robotCameras.entries.find(e=>e.id===$('robot-camera-select').value);if(e)selectRobotCamera(e);else leaveRobotCamera();};$('robot-camera-exit').onclick=leaveRobotCamera;
+    planScene=new PlanScene(engine,scene,focusPlan);planScene.onEquipmentFocus=focusCell;robotCameras=createRobotCameras(planScene,engine,selectRobotCamera);patrolViews=createPatrolViews(scene,robotCameras.entries);for(const e of robotCameras.entries){const o=document.createElement('option');o.value=e.id;o.textContent=e.name;$('robot-camera-select').append(o);}$('robot-camera-select').onchange=()=>{const e=robotCameras.entries.find(e=>e.id===$('robot-camera-select').value);if(e)selectRobotCamera(e);else leaveRobotCamera();};$('robot-camera-exit').onclick=leaveRobotCamera;
     engine.onEvent(()=>renderLog());
     makeFloor();contactShadows(scene,[...engine.order.map(c=>[c.def.x,c.def.z-3.7,7,6]),[34,-14,7,6],[42,-14,6,5],[60,-14,7,6]]);makeSourceBays();makeCellList();bindControls();makeRoute();
     for(const c of engine.order){c.label.position.y=2.8;c.el.querySelector('.nm span').textContent=CELL_SHORT[c.id];c.el.addEventListener('pointerdown',e=>{e.stopPropagation();focusCell(c.id);});for(const p of c.plates)p.visible=false;}
@@ -205,7 +206,7 @@ function frame(now){
   // Keep every mechanical animation frozen during pause/protective stop.
   if(running&&!halted)engine.update(real,true,speed);aiState=syncIntegratedAI(engine);incidentState=incidentTracker.update(engine,aiState);planScene.update();updateIncidentMarker();if(aiState&&aiFocusSample!==aiState.sample){aiFocusSample=aiState.sample;if(!robotCamera&&(!selected||selected==='VIS'||selected==='A-4-1'))focusCell('VIS');}engine.wallG.visible=false;engine.pkG.visible=showData;for(const c of engine.order)c.iot.visible=showData;
   if(cameraGoal){camera.position.lerp(cameraGoal.position,.07);controls.target.lerp(cameraGoal.target,.07);if(camera.position.distanceTo(cameraGoal.position)<.02)cameraGoal=null;}
-  robotCameras.refresh();controls.update();renderRobotPreview();renderer.render(scene,camera);arrangeLabels();labelRenderer.domElement.style.visibility='visible';labelRenderer.render(scene,camera);
+  robotCameras.refresh();patrolViews.update();controls.update();renderRobotPreview();renderer.render(scene,camera);arrangeLabels();labelRenderer.domElement.style.visibility='visible';labelRenderer.render(scene,camera);
   uiTimer+=real;if(uiTimer>.2){uiTimer=0;updateUI();}
   if(recorder?.state==='recording')drawRecording();requestAnimationFrame(frame);
 }

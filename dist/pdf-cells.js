@@ -46,7 +46,6 @@ export function buildPDFCells(root,engine,plan){
  const gc=group(root,34,3);box(gc,.9,1.8,.6,-2,.9,0,white);box(gc,.55,.55,.05,-2,1.3,.33,blue);
  const dc=group(root,44,3);for(const x of [-2,2])box(dc,.15,2.8,.15,x,1.4,-1.7,gray);box(dc,4.2,.2,.7,0,2.8,-1.7,white);
  for(const x of [41,47]){const g=group(root,x,-2);for(const dx of [-1,1])box(g,.1,2.6,.1,dx,1.3,0,gold);for(const y of [.25,1.35,2.45]){box(g,2.2,.08,.9,0,y,0,gray);for(const dx of [-.5,.5])box(g,.7,.6,.65,dx,y+.35,0,white);}}
- const sensorCone=new T.Mesh(new T.ConeGeometry(1.5,4,24,1,true),new T.MeshBasicMaterial({color:0x63d9ff,transparent:true,opacity:.08,depthWrite:false,side:T.DoubleSide}));sensorCone.position.y=-2.2;plan.drone.add(sensorCone);
  const monitor={ground:null,air:null,cycle:-1};plan.monitor=monitor;
  return {update(t){
   const c=engine.cells.SCAN;const busy=c.state==='BUSY'&&!c.fault;const p=c.progress;
