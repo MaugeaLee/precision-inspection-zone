@@ -10,10 +10,11 @@ export function createRobotCameras(plan,engine,select){
    if(r.rig){const p=r.rig.tcp.getWorldPosition(new T.Vector3());return {position:p.clone().add(new T.Vector3(0,.18,.12)),target:p.clone().add(new T.Vector3(0,-.6,0))};}
    return {position:point(r.root,0,2,.4),target:point(v.g,0,.9,-1.5)};
   });
+  e.cell=cell;e.robot=r;
   r.tag.element.setAttribute('role','button');r.tag.element.setAttribute('tabindex','0');r.tag.element.title=name+' 가상 카메라';r.tag.element.style.cursor='pointer';r.tag.element.style.pointerEvents='auto';
   r.tag.element.onclick=ev=>{ev.stopPropagation();select(e);};r.tag.element.onkeydown=ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();select(e);}};
  }
- for(const [id,box]of Object.entries(plan.scanBoxes||{}))for(const [i,r]of (box.robots||[]).entries())add('ScanBox '+id+' · H2515 '+(i+1)+' · ATOS',r.base,()=>({position:point(r.sensor,0,0,.18),target:point(r.sensor,0,0,1.2)}));
+ for(const [id,box]of Object.entries(plan.scanBoxes||{}))for(const [i,r]of (box.robots||[]).entries())Object.assign(add('ScanBox '+id+' · H2515 '+(i+1)+' · ATOS',r.base,()=>({position:point(r.sensor,0,0,.18),target:point(r.sensor,0,0,1.2)})),{cell:'SCAN',equipment:id});
  add('4족 보행 로봇 · 전방',plan.dog,()=>({position:point(plan.dog,.86,.97,0),target:point(plan.dog,5,.85,0)}));
  add('드론 · 하방 검사',plan.drone,()=>({position:point(plan.drone,0,-.4,0),target:point(plan.drone,0,-5,.1)}));
  for(const c of engine.carriers){const e=add('AMR '+(c.i+1)+' · 전방',c.g,()=>{const o=engine.carriers[c.i].g;return {position:point(o,0,.65,.85),target:point(o,0,.65,5)};});e.carrier=c.i;}

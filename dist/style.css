@@ -31,3 +31,6 @@
 #robot-camera-banner{position:absolute;left:16px;top:82px;z-index:8;background:#102d35ed;padding:12px;border:1px solid #73d9c3;border-radius:9px;display:flex;flex-direction:column;gap:8px;max-width:320px}#robot-camera-banner[hidden]{display:none}#robot-camera-banner span{font-size:11px;color:#b2cbd1}#robot-camera-select{max-width:180px}.view-tools{flex-wrap:wrap}
 
 #robot-camera-banner{left:auto;right:16px;top:82px;width:min(344px,calc(100% - 32px));max-width:none;box-sizing:border-box;box-shadow:0 12px 32px #0008}#robot-camera-screen{display:block;width:100%;height:auto;aspect-ratio:16/9;border-radius:5px;background:#20323e}#robot-camera-name{font-size:12px}
+
+#robot-camera-banner{max-height:calc(100% - 160px);overflow-y:auto}#robot-camera-status{border-top:1px solid #45616b;padding-top:8px}#robot-camera-status .detail-grid{margin:0;gap:8px}#robot-camera-status .detail-grid span{display:block;font-size:10px}#robot-camera-status .detail-grid b{font-size:12px}#robot-camera-status .motion-step{margin:8px 0 0;font-size:11px;line-height:1.5}
+#robot-camera-status .detail-grid{display:grid;grid-template-columns:1fr 1fr}#robot-camera-banner{max-height:calc(100% - 110px);gap:6px;padding:10px}#robot-camera-screen{max-height:155px;object-fit:contain}#robot-camera-exit{position:sticky;bottom:0;background:#152d36}
